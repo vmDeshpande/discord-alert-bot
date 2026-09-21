@@ -10,6 +10,7 @@ import {
   Interaction,
   EmbedBuilder,
 } from 'discord.js';
+import { DeltaClient, ConnectionState } from '../delta/client';
 import { Logger } from '../logger';
 import { AlertConfig } from '../alerts/types';
 import { validateAlertInput } from '../alerts/validation';
@@ -22,11 +23,15 @@ export interface DiscordClient {
   sendAlert: (channelId: string, message: string) => Promise<boolean>;
 }
 
-export function createDiscordClient(logger: Logger, storage: AlertStorage): DiscordClient {
+export function createDiscordClient(
+  logger: Logger,
+  storage: AlertStorage,
+  deltaClient?: DeltaClient,
+): DiscordClient {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   });
-  (client as any).commands = new Collection();
+  (client as { commands?: Collection<string, unknown> }).commands = new Collection();
 
   client.once(Events.ClientReady, (): void => {
     logger.info('Discord connected', { user: client.user?.tag });
@@ -35,7 +40,7 @@ export function createDiscordClient(logger: Logger, storage: AlertStorage): Disc
 
   client.on(Events.InteractionCreate, async (interaction: Interaction): Promise<void> => {
     if (!interaction.isChatInputCommand()) return;
-    await handleCommand(interaction as ChatInputCommandInteraction, storage, logger);
+    await handleCommand(interaction as ChatInputCommandInteraction, storage, logger, deltaClient);
   });
 
   client.on('disconnect', (): void => {
@@ -123,6 +128,7 @@ async function handleCommand(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
+  deltaClient?: DeltaClient,
 ): Promise<void> {
   const { commandName } = interaction;
 
@@ -130,7 +136,7 @@ async function handleCommand(
     if (commandName === 'alert') {
       await handleAlertCommand(interaction, storage, logger);
     } else if (commandName === 'status') {
-      await handleStatusCommand(interaction);
+      await handleStatusCommand(interaction, deltaClient);
     } else if (commandName === 'alerts') {
       await handleAlertsCommand(interaction, storage);
     }
@@ -164,7 +170,7 @@ async function handleAlertCommand(
   const alert: AlertConfig = {
     id: generateId(),
     symbol,
-    condition: condition as any,
+    condition: condition as AlertConfig['condition'],
     targetPrice,
     discordChannelId,
     enabled: true,
@@ -181,17 +187,28 @@ async function handleAlertCommand(
   logger.info('Alert created via command', { id: alert.id, symbol });
 }
 
-async function handleStatusCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+async function handleStatusCommand(
+  interaction: ChatInputCommandInteraction,
+  deltaClient?: DeltaClient,
+): Promise<void> {
   const uptime = process.uptime();
-  const deltaConnected = (globalThis as any).deltaConnected ?? false;
-  const lastDeltaUpdate = (globalThis as any).lastDeltaUpdate ?? 'never';
+  const discordReady = true;
+  const deltaState: ConnectionState = deltaClient?.getConnectionState() ?? 'disconnected';
+  const deltaConnected = deltaState === 'connected';
+  const lastDeltaUpdate = deltaClient
+    ? new Date(deltaClient.getLastUpdateTimestamp()).toISOString()
+    : 'never';
+  const symbols = deltaClient?.getMonitoredSymbols() ?? [];
 
   const embed = new EmbedBuilder()
     .setTitle('Bot Status')
     .addFields(
       { name: 'Uptime', value: formatDuration(uptime), inline: true },
+      { name: 'Discord Ready', value: discordReady ? 'Yes' : 'No', inline: true },
       { name: 'Delta Connected', value: deltaConnected ? 'Yes' : 'No', inline: true },
+      { name: 'Delta State', value: deltaState, inline: true },
       { name: 'Last Delta Update', value: lastDeltaUpdate, inline: true },
+      { name: 'Monitored Symbols', value: symbols.join(', ') || 'None', inline: false },
     );
 
   await interaction.reply({ embeds: [embed] });

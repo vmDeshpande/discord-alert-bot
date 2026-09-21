@@ -1,34 +1,36 @@
 import { Logger } from '../logger';
-import { AlertConfig, PriceUpdate, TriggerResult } from '../alerts/types';
+import { AlertConfig, PriceUpdate, TriggerResult, AlertCondition } from '../alerts/types';
 import { AlertStorage } from '../database/storage';
-import { DeltaClient } from '../delta/client';
+import { PriceUpdatePayload } from '../delta/client';
 import { DiscordClient } from '../discord/client';
 
 export interface AlertEngine {
-  onPriceUpdate: (symbol: string, price: number, timestamp: number) => void;
+  onPriceUpdate: (payload: PriceUpdatePayload) => void;
   getTriggeredAlerts: () => AlertConfig[];
   resetTriggeredAlert: (id: string) => void;
 }
 
-function priceCrossed(
-  previousPrice: number,
-  currentPrice: number,
-  targetPrice: number,
-): {
-  crossedAbove: boolean;
-  crossedBelow: boolean;
-} {
-  return {
-    crossedAbove: previousPrice < targetPrice && currentPrice >= targetPrice,
-    crossedBelow: previousPrice > targetPrice && currentPrice <= targetPrice,
-  };
+export interface TriggerContext {
+  alert: AlertConfig;
+  result: TriggerResult;
+  discordSent: boolean;
 }
 
 export function evaluateAlert(
   alert: AlertConfig,
   priceUpdate: PriceUpdate,
-  previousPrice: number,
+  previousPrice: number | null,
 ): TriggerResult {
+  if (previousPrice === null) {
+    return {
+      triggered: false,
+      condition: alert.condition,
+      previousPrice: 0,
+      currentPrice: priceUpdate.price,
+      targetPrice: alert.targetPrice,
+    };
+  }
+
   const triggered =
     !alert.triggered &&
     alert.enabled &&
@@ -44,20 +46,16 @@ export function evaluateAlert(
 }
 
 function evaluateCondition(
-  condition: AlertConfig['condition'],
+  condition: AlertCondition,
   previousPrice: number,
   currentPrice: number,
   targetPrice: number,
 ): boolean {
   switch (condition) {
-    case 'crossed_above': {
-      const { crossedAbove } = priceCrossed(previousPrice, currentPrice, targetPrice);
-      return crossedAbove;
-    }
-    case 'crossed_below': {
-      const { crossedBelow } = priceCrossed(previousPrice, currentPrice, targetPrice);
-      return crossedBelow;
-    }
+    case 'crossed_above':
+      return previousPrice < targetPrice && currentPrice >= targetPrice;
+    case 'crossed_below':
+      return previousPrice > targetPrice && currentPrice <= targetPrice;
     case 'reaches_or_above':
       return currentPrice >= targetPrice;
     case 'reaches_or_below':
@@ -74,94 +72,59 @@ export function shouldMonitorSymbol(alert: AlertConfig, symbol: string): boolean
 export function createAlertEngine(
   storage: AlertStorage,
   discordClient: DiscordClient,
-  deltaClient: DeltaClient,
   logger: Logger,
 ): AlertEngine {
   let triggeredAlerts: AlertConfig[] = [];
+  let pendingSends: Set<string> = new Set();
 
-  function onPriceUpdate(symbol: string, price: number, timestamp: number): void {
-    const priceUpdate: PriceUpdate = { symbol, price, timestamp };
+  async function processAlert(alert: AlertConfig, result: TriggerResult): Promise<void> {
+    if (alert.triggered) return;
+
+    const message = formatAlertMessage(alert, result);
+    logger.info(`Alert triggered: ${alert.symbol} ${alert.condition} ${alert.targetPrice}`, {
+      alertId: alert.id,
+    });
+
+    pendingSends.add(alert.id);
+
+    try {
+      const sent = await discordClient.sendAlert(alert.discordChannelId, message);
+      if (sent) {
+        alert.triggered = true;
+        alert.triggeredAt = new Date().toISOString();
+        storage.update(alert);
+        triggeredAlerts.push(alert);
+        logger.info('Alert state updated', { id: alert.id, triggered: true });
+      } else {
+        logger.error('Discord alert delivery failed, alert remains active', {
+          alertId: alert.id,
+          channelId: alert.discordChannelId,
+        });
+      }
+    } catch (err) {
+      logger.error('Failed to send alert notification', { error: String(err), alertId: alert.id });
+    } finally {
+      pendingSends.delete(alert.id);
+    }
+  }
+
+  function onPriceUpdate(payload: PriceUpdatePayload): void {
+    const { symbol, currentPrice, previousPrice, timestamp } = payload;
 
     const activeAlerts = storage.getActiveBySymbol(symbol);
 
     for (const alert of activeAlerts) {
-      const previousPriceData = deltaClient.getLastPrice(symbol);
-      const previousPrice = previousPriceData?.price ?? price;
+      if (pendingSends.has(alert.id)) continue;
 
-      if (previousPrice === price) continue;
-
-      const result = evaluateAlertNow(alert, priceUpdate, previousPrice);
+      const priceUpdate: PriceUpdate = { symbol, price: currentPrice, timestamp };
+      const result = evaluateAlert(alert, priceUpdate, previousPrice);
 
       if (result.triggered) {
-        handleTriggeredAlert(alert, result);
+        processAlert(alert, result).catch((err) => {
+          logger.error('Error processing alert', { error: String(err), alertId: alert.id });
+        });
       }
     }
-
-    if (timestamp > (globalThis as any).lastDeltaUpdate) {
-      (globalThis as any).lastDeltaUpdate = new Date(timestamp).toISOString();
-    }
-    (globalThis as any).deltaConnected = true;
-  }
-
-  function evaluateAlertNow(
-    alert: AlertConfig,
-    priceUpdate: PriceUpdate,
-    previousPrice: number,
-  ): TriggerResult {
-    const { condition, targetPrice } = alert;
-    let triggered = false;
-
-    if (condition === 'crossed_above') {
-      triggered = previousPrice < targetPrice && priceUpdate.price >= targetPrice;
-    } else if (condition === 'crossed_below') {
-      triggered = previousPrice > targetPrice && priceUpdate.price <= targetPrice;
-    } else if (condition === 'reaches_or_above') {
-      triggered = priceUpdate.price >= targetPrice;
-    } else if (condition === 'reaches_or_below') {
-      triggered = priceUpdate.price <= targetPrice;
-    }
-
-    return {
-      triggered,
-      condition,
-      previousPrice,
-      currentPrice: priceUpdate.price,
-      targetPrice,
-    };
-  }
-
-  function handleTriggeredAlert(alert: AlertConfig, result: TriggerResult): void {
-    const now = new Date().toISOString();
-    alert.triggered = true;
-    alert.triggeredAt = now;
-    storage.update(alert);
-    triggeredAlerts.push(alert);
-
-    const message = formatAlertMessage(alert, result);
-    logger.info(`Alert triggered: ${alert.symbol} ${alert.condition} ${alert.targetPrice}`);
-
-    discordClient.sendAlert(alert.discordChannelId, message).catch((err) => {
-      logger.error('Failed to send alert notification', { error: String(err), alertId: alert.id });
-    });
-
-    logger.info('Alert state updated', { id: alert.id, triggered: true });
-  }
-
-  function formatAlertMessage(alert: AlertConfig, result: TriggerResult): string {
-    const emoji = alert.condition.includes('above')
-      ? '📈'
-      : alert.condition.includes('below')
-        ? '📉'
-        : '🎯';
-    return (
-      `${emoji} **Price Alert Triggered**\n` +
-      `Symbol: ${alert.symbol}\n` +
-      `Condition: ${alert.condition}\n` +
-      `Target: ${alert.targetPrice}\n` +
-      `Current: ${result.currentPrice}\n` +
-      `Previous: ${result.previousPrice}\n` +
-      `Time: ${new Date().toISOString()}`
-    );
   }
 
   return {
@@ -174,4 +137,21 @@ export function createAlertEngine(
       }
     },
   };
+}
+
+function formatAlertMessage(alert: AlertConfig, result: TriggerResult): string {
+  const emoji = alert.condition.includes('above')
+    ? '📈'
+    : alert.condition.includes('below')
+      ? '📉'
+      : '🎯';
+  return (
+    `${emoji} **Price Alert Triggered**\n` +
+    `Symbol: ${alert.symbol}\n` +
+    `Condition: ${alert.condition}\n` +
+    `Target: ${alert.targetPrice}\n` +
+    `Current: ${result.currentPrice}\n` +
+    `Previous: ${result.previousPrice}\n` +
+    `Time: ${new Date().toISOString()}`
+  );
 }

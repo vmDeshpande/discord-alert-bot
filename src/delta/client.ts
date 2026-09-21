@@ -8,16 +8,85 @@ export interface DeltaConfig {
   maxReconnectIntervalMs: number;
 }
 
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+
+export interface PriceSnapshot {
+  price: number;
+  timestamp: number;
+}
+
+export interface PriceUpdatePayload {
+  symbol: string;
+  currentPrice: number;
+  previousPrice: number | null;
+  timestamp: number;
+}
+
+export type PriceHandler = (payload: PriceUpdatePayload) => void;
+
 export interface DeltaClient {
   connect: () => void;
   disconnect: () => void;
   isConnected: () => boolean;
-  getLastPrice: (symbol: string) => { price: number; timestamp: number } | undefined;
+  getConnectionState: () => ConnectionState;
+  getPrice: (symbol: string) => PriceSnapshot | undefined;
+  getPreviousPrice: (symbol: string) => PriceSnapshot | undefined;
   getLastUpdateTimestamp: () => number;
-  getConnected: () => boolean;
+  getMonitoredSymbols: () => string[];
 }
 
-export type PriceHandler = (symbol: string, price: number, timestamp: number) => void;
+export interface ParsedTicker {
+  symbol: string;
+  price: number;
+  timestamp: number;
+}
+
+export function parseDeltaTicker(data: string): ParsedTicker | null {
+  let msg: Record<string, unknown>;
+  try {
+    msg = JSON.parse(data);
+  } catch {
+    return null;
+  }
+
+  if (typeof msg !== 'object' || msg === null) return null;
+  if (msg.type !== 'ticker') return null;
+
+  let symbol: string | undefined;
+  let priceStr: string | number | undefined;
+
+  if (msg.sy !== undefined && msg.sp !== undefined) {
+    symbol = typeof msg.sy === 'string' ? msg.sy : undefined;
+    priceStr = typeof msg.sp === 'string' || typeof msg.sp === 'number' ? msg.sp : undefined;
+  } else if (msg.ticker !== undefined && typeof msg.ticker === 'object') {
+    const ticker = msg.ticker as Record<string, unknown>;
+    symbol =
+      typeof ticker.symbol === 'string'
+        ? ticker.symbol
+        : typeof ticker.sy === 'string'
+          ? ticker.sy
+          : undefined;
+    const close = ticker.close;
+    priceStr =
+      typeof close === 'string' || typeof close === 'number'
+        ? close
+        : typeof ticker.sp === 'string' || typeof ticker.sp === 'number'
+          ? ticker.sp
+          : typeof ticker.mark_price === 'string' || typeof ticker.mark_price === 'number'
+            ? ticker.mark_price
+            : typeof ticker.mp === 'string' || typeof ticker.mp === 'number'
+              ? ticker.mp
+              : undefined;
+  }
+
+  if (!symbol) return null;
+  if (priceStr === undefined || priceStr === null) return null;
+
+  const price = typeof priceStr === 'number' ? priceStr : parseFloat(String(priceStr));
+  if (!Number.isFinite(price)) return null;
+
+  return { symbol, price, timestamp: Date.now() };
+}
 
 export function createDeltaClient(
   config: DeltaConfig,
@@ -25,17 +94,19 @@ export function createDeltaClient(
   onPrice: PriceHandler,
 ): DeltaClient {
   let ws: WebSocket | null = null;
-  let connected = false;
+  let connectionState: ConnectionState = 'disconnected';
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastPrices: Map<string, { price: number; timestamp: number }> = new Map();
+  let reconnectAttempts = 0;
+  let priceHistory: Map<string, { previous: PriceSnapshot | undefined; current: PriceSnapshot }> =
+    new Map();
   let lastUpdateTimestamp = 0;
-  let shouldReconnect = true;
+  let manualDisconnect = false;
 
   function getReconnectDelay(): number {
     const base = config.reconnectIntervalMs;
     const max = config.maxReconnectIntervalMs;
-    const attempts = (globalThis as any)._deltaReconnectAttempts || 0;
-    return Math.min(base * Math.pow(2, attempts), max);
+    const delay = Math.min(base * Math.pow(2, reconnectAttempts), max);
+    return delay;
   }
 
   function subscribeSymbols(): void {
@@ -52,26 +123,31 @@ export function createDeltaClient(
     }
   }
 
-  function handleMessage(data: string): void {
-    try {
-      const msg = JSON.parse(data);
+  function handleMessage(raw: string): void {
+    const parsed = parseDeltaTicker(raw);
+    if (!parsed) return;
 
-      if (msg.type === 'ticker' && msg.ticker) {
-        const ticker = msg.ticker;
-        const symbol = ticker.symbol || ticker.sy;
-        const priceStr = ticker.close || ticker.sp || ticker.mark_price || ticker.mp;
-        if (symbol && priceStr !== undefined) {
-          const price = parseFloat(priceStr);
-          if (Number.isFinite(price)) {
-            const now = Date.now();
-            lastPrices.set(symbol, { price, timestamp: now });
-            lastUpdateTimestamp = now;
-            onPrice(symbol, price, now);
-          }
-        }
-      }
-    } catch (err) {
-      logger.debug('Failed to parse Delta message', { error: String(err) });
+    const entry = priceHistory.get(parsed.symbol);
+    const previous = entry?.current;
+
+    priceHistory.set(parsed.symbol, {
+      previous,
+      current: { price: parsed.price, timestamp: parsed.timestamp },
+    });
+
+    lastUpdateTimestamp = parsed.timestamp;
+    onPrice({
+      symbol: parsed.symbol,
+      currentPrice: parsed.price,
+      previousPrice: previous?.price ?? null,
+      timestamp: parsed.timestamp,
+    });
+  }
+
+  function setState(state: ConnectionState): void {
+    connectionState = state;
+    if (state === 'connected') {
+      reconnectAttempts = 0;
     }
   }
 
@@ -85,13 +161,14 @@ export function createDeltaClient(
       ws = null;
     }
 
+    setState('connecting');
+
     try {
       logger.info('Connecting to Delta WebSocket', { url: config.wsUrl });
       ws = new WebSocket(config.wsUrl);
 
       ws.on('open', (): void => {
-        connected = true;
-        (globalThis as any)._deltaReconnectAttempts = 0;
+        setState('connected');
         logger.info('Delta WebSocket connected');
         subscribeSymbols();
       });
@@ -103,13 +180,13 @@ export function createDeltaClient(
       });
 
       ws.on('close', (): void => {
-        connected = false;
+        setState('disconnected');
         logger.warn('Delta WebSocket disconnected');
-        if (shouldReconnect) {
+        if (!manualDisconnect) {
           const delay = getReconnectDelay();
-          (globalThis as any)._deltaReconnectAttempts =
-            ((globalThis as any)._deltaReconnectAttempts || 0) + 1;
+          reconnectAttempts++;
           logger.info('Reconnecting to Delta in ' + Math.round(delay / 1000) + 's');
+          setState('reconnecting');
           reconnectTimer = setTimeout(connect, delay);
         }
       });
@@ -119,7 +196,8 @@ export function createDeltaClient(
       });
     } catch (err) {
       logger.error('Failed to create Delta WebSocket', { error: String(err) });
-      if (shouldReconnect) {
+      setState('disconnected');
+      if (!manualDisconnect) {
         const delay = getReconnectDelay();
         reconnectTimer = setTimeout(connect, delay);
       }
@@ -127,7 +205,7 @@ export function createDeltaClient(
   }
 
   function disconnect(): void {
-    shouldReconnect = false;
+    manualDisconnect = true;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -140,7 +218,7 @@ export function createDeltaClient(
       }
       ws = null;
     }
-    connected = false;
+    setState('disconnected');
     logger.info('Delta WebSocket disconnected (manual)');
   }
 
@@ -148,15 +226,16 @@ export function createDeltaClient(
 
   return {
     connect: (): void => {
-      shouldReconnect = true;
+      manualDisconnect = false;
       connect();
     },
     disconnect,
-    isConnected: (): boolean => connected,
-    getLastPrice: (symbol: string): { price: number; timestamp: number } | undefined => {
-      return lastPrices.get(symbol);
-    },
+    isConnected: (): boolean => connectionState === 'connected',
+    getConnectionState: (): ConnectionState => connectionState,
+    getPrice: (symbol: string): PriceSnapshot | undefined => priceHistory.get(symbol)?.current,
+    getPreviousPrice: (symbol: string): PriceSnapshot | undefined =>
+      priceHistory.get(symbol)?.previous,
     getLastUpdateTimestamp: (): number => lastUpdateTimestamp,
-    getConnected: (): boolean => connected,
+    getMonitoredSymbols: (): string[] => [...config.symbols],
   };
 }

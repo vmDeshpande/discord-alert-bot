@@ -40,9 +40,22 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const priceHandler: PriceHandler = (symbol: string, price: number, timestamp: number): void => {
+  try {
+    discordClient = createDiscordClient(logger, storage);
+    if (config.discordToken) {
+      await discordClient.start(config.discordToken);
+    } else {
+      logger.warn('No Discord token provided; Discord client not started');
+    }
+  } catch (err) {
+    logger.error('Failed to initialize Discord client', { error: String(err) });
+  }
+
+  alertEngine = createAlertEngine(storage, discordClient!, logger);
+
+  const priceHandler: PriceHandler = (payload): void => {
     if (alertEngine) {
-      alertEngine.onPriceUpdate(symbol, price, timestamp);
+      alertEngine.onPriceUpdate(payload);
     }
   };
 
@@ -57,24 +70,9 @@ async function main(): Promise<void> {
       logger,
       priceHandler,
     );
-    (globalThis as any).deltaConnected = false;
-    (globalThis as any).lastDeltaUpdate = 'never';
   } catch (err) {
     logger.error('Failed to initialize Delta client', { error: String(err) });
   }
-
-  try {
-    discordClient = createDiscordClient(logger, storage!);
-    if (config.discordToken) {
-      await discordClient.start(config.discordToken);
-    } else {
-      logger.warn('No Discord token provided; Discord client not started');
-    }
-  } catch (err) {
-    logger.error('Failed to initialize Discord client', { error: String(err) });
-  }
-
-  alertEngine = createAlertEngine(storage!, discordClient!, deltaClient!, logger);
 
   logger.info('Bot started successfully');
   logger.info('Delta WebSocket URL', { url: config.deltaWsUrl });

@@ -92,7 +92,7 @@ npm start
 npm test
 ```
 
-Tests cover the alert engine logic independently - no Discord or Delta connection needed.
+Tests cover the alert engine logic independently - no Discord or Delta connection needed. 54 tests covering ticker parsing, alert evaluation, validation, and Discord-gated integration.
 
 ## How to Build for Production
 
@@ -159,26 +159,37 @@ npm start
 
 ## How Alerts Work
 
-### Alert Conditions
+#### Price Tracking
+
+The Delta client tracks both the previous and current price per symbol. On each price update:
+
+- **First update** (no prior price): `previousPrice` is `null` → no alert triggers until a second update provides a comparison point
+- **Subsequent updates**: `previousPrice` and `currentPrice` are compared against the alert target
+
+#### Alert Conditions
 
 | Condition | Trigger |
 |-----------|---------|
-| `crossed_above` | Price crosses from below target to above |
-| `crossed_below` | Price crosses from above target to below |
-| `reaches_or_above` | Price is at or above target |
-| `reaches_or_below` | Price is at or below target |
+| `crossed_above` | Price crosses from below target to above (previous < target ≤ current) |
+| `crossed_below` | Price crosses from above target to below (previous > target ≥ current) |
+| `reaches_or_above` | Price is at or above target (current ≥ target) |
+| `reaches_or_below` | Price is at or below target (current ≤ target) |
 
-### Why Not `currentPrice === targetPrice`?
+#### Discord-Gated Delivery
+
+Alerts are **not** marked as `triggered` until Discord confirms delivery. If Discord send fails, the alert remains active and will be re-evaluated on the next price update. A `pendingSends` set prevents duplicate notifications for the same alert while a delivery attempt is in flight.
+
+#### Why Not `currentPrice === targetPrice`?
 
 Market prices can jump over exact targets (e.g., from 99950 to 100020). The bot uses cross detection and threshold comparisons instead of equality checks.
 
-### Example
+#### Example
 
 Target = 100000, Previous = 99950, Current = 100020 → **Triggers** `crossed_above`
 
-### Deduplication
+#### Deduplication
 
-Once an alert fires, it is marked as `triggered` and won't re-fire until manually reset. This prevents alert spam.
+Once an alert fires, it is marked as `triggered` and won't re-fire until manually reset. The `pendingSends` set also prevents duplicate sends while Discord delivery is in progress.
 
 ### Alert Fields
 
