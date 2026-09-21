@@ -7,8 +7,6 @@ import { createDeltaClient, DeltaClient } from './delta/client';
 import { createDiscordClient, DiscordClient } from './discord/client';
 import { createAlertEngine, AlertEngine } from './alerts/engine';
 import { AlertStorage } from './database/storage';
-import { PriceHandler } from './delta/client';
-
 let deltaClient: DeltaClient | null = null;
 let discordClient: DiscordClient | null = null;
 let alertEngine: AlertEngine | null = null;
@@ -41,7 +39,32 @@ async function main(): Promise<void> {
   }
 
   try {
-    discordClient = createDiscordClient(logger, storage);
+    deltaClient = createDeltaClient(
+      {
+        wsUrl: config.deltaWsUrl,
+        symbols: config.deltaSymbols,
+        reconnectIntervalMs: config.deltaReconnectIntervalMs,
+        maxReconnectIntervalMs: config.deltaMaxReconnectIntervalMs,
+      },
+      logger,
+      (payload): void => {
+        if (alertEngine) {
+          alertEngine.onPriceUpdate(payload);
+        }
+      },
+    );
+  } catch (err) {
+    logger.error('Failed to initialize Delta client', { error: String(err) });
+  }
+
+  try {
+    discordClient = createDiscordClient(
+      logger,
+      storage!,
+      deltaClient,
+      config.ethChannelId,
+      config.solChannelId,
+    );
     if (config.discordToken) {
       await discordClient.start(config.discordToken);
     } else {
@@ -51,28 +74,7 @@ async function main(): Promise<void> {
     logger.error('Failed to initialize Discord client', { error: String(err) });
   }
 
-  alertEngine = createAlertEngine(storage, discordClient!, logger);
-
-  const priceHandler: PriceHandler = (payload): void => {
-    if (alertEngine) {
-      alertEngine.onPriceUpdate(payload);
-    }
-  };
-
-  try {
-    deltaClient = createDeltaClient(
-      {
-        wsUrl: config.deltaWsUrl,
-        symbols: config.deltaSymbols,
-        reconnectIntervalMs: config.deltaReconnectIntervalMs,
-        maxReconnectIntervalMs: config.deltaMaxReconnectIntervalMs,
-      },
-      logger,
-      priceHandler,
-    );
-  } catch (err) {
-    logger.error('Failed to initialize Delta client', { error: String(err) });
-  }
+  alertEngine = createAlertEngine(storage!, discordClient!, logger);
 
   logger.info('Bot started successfully');
   logger.info('Delta WebSocket URL', { url: config.deltaWsUrl });

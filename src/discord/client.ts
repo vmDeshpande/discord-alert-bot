@@ -10,11 +10,14 @@ import {
   Interaction,
   EmbedBuilder,
 } from 'discord.js';
-import { DeltaClient, ConnectionState } from '../delta/client';
 import { Logger } from '../logger';
 import { AlertConfig } from '../alerts/types';
-import { validateAlertInput } from '../alerts/validation';
 import { AlertStorage } from '../database/storage';
+import { DeltaClient } from '../delta/client';
+import { validateAlertInput } from '../alerts/validation';
+
+const ETHUSD_SYMBOL = 'ETHUSD';
+const SOLUSD_SYMBOL = 'SOLUSD';
 
 export interface DiscordClient {
   start: (token: string) => Promise<void>;
@@ -26,12 +29,19 @@ export interface DiscordClient {
 export function createDiscordClient(
   logger: Logger,
   storage: AlertStorage,
-  deltaClient?: DeltaClient,
+  deltaClient: DeltaClient | null,
+  ethChannelId: string,
+  solChannelId: string,
 ): DiscordClient {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
   });
   (client as { commands?: Collection<string, unknown> }).commands = new Collection();
+
+  const channelToSymbol: Record<string, string> = {
+    [ethChannelId]: ETHUSD_SYMBOL,
+    [solChannelId]: SOLUSD_SYMBOL,
+  };
 
   client.once(Events.ClientReady, (): void => {
     logger.info('Discord connected', { user: client.user?.tag });
@@ -40,7 +50,15 @@ export function createDiscordClient(
 
   client.on(Events.InteractionCreate, async (interaction: Interaction): Promise<void> => {
     if (!interaction.isChatInputCommand()) return;
-    await handleCommand(interaction as ChatInputCommandInteraction, storage, logger, deltaClient);
+    await handleCommand(
+      interaction as ChatInputCommandInteraction,
+      storage,
+      logger,
+      deltaClient,
+      channelToSymbol,
+      ethChannelId,
+      solChannelId,
+    );
   });
 
   client.on('disconnect', (): void => {
@@ -59,29 +77,23 @@ export function createDiscordClient(
     if (!client.user) return;
     const commands = [
       new SlashCommandBuilder()
+        .setName('set-alert')
+        .setDescription('Set a price alert for this crypto')
+        .addStringOption((o) => o.setName('price').setDescription('Target price').setRequired(true))
+        .toJSON(),
+      new SlashCommandBuilder()
+        .setName('remove-alert')
+        .setDescription('Remove the alert for this crypto')
+        .toJSON(),
+      new SlashCommandBuilder()
         .setName('alert')
-        .setDescription('Create a new price alert')
-        .addStringOption((o) =>
-          o.setName('symbol').setDescription('Symbol e.g. BTCUSD').setRequired(true),
-        )
-        .addStringOption((o) =>
-          o
-            .setName('condition')
-            .setDescription('crossed_above, crossed_below, reaches_or_above, reaches_or_below')
-            .setRequired(true),
-        )
-        .addNumberOption((o) =>
-          o.setName('target_price').setDescription('Target price').setRequired(true),
-        )
-        .addStringOption((o) =>
-          o.setName('channel_id').setDescription('Discord channel ID').setRequired(true),
-        )
+        .setDescription('Show the current alert for this crypto')
         .toJSON(),
       new SlashCommandBuilder()
         .setName('status')
-        .setDescription('Check bot and connection status')
+        .setDescription('Show bot status and current prices')
         .toJSON(),
-      new SlashCommandBuilder().setName('alerts').setDescription('List all alerts').toJSON(),
+      new SlashCommandBuilder().setName('help').setDescription('Show available commands').toJSON(),
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN || '');
@@ -128,17 +140,32 @@ async function handleCommand(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
-  deltaClient?: DeltaClient,
+  deltaClient: DeltaClient | null,
+  channelToSymbol: Record<string, string>,
+  ethChannelId: string,
+  solChannelId: string,
 ): Promise<void> {
   const { commandName } = interaction;
 
   try {
-    if (commandName === 'alert') {
-      await handleAlertCommand(interaction, storage, logger);
+    if (commandName === 'set-alert') {
+      await handleSetAlertCommand(
+        interaction,
+        storage,
+        logger,
+        deltaClient,
+        channelToSymbol,
+        ethChannelId,
+        solChannelId,
+      );
+    } else if (commandName === 'remove-alert') {
+      await handleRemoveAlertCommand(interaction, storage, logger, channelToSymbol);
+    } else if (commandName === 'alert') {
+      await handleAlertCommand(interaction, storage, channelToSymbol);
     } else if (commandName === 'status') {
       await handleStatusCommand(interaction, deltaClient);
-    } else if (commandName === 'alerts') {
-      await handleAlertsCommand(interaction, storage);
+    } else if (commandName === 'help') {
+      await handleHelpCommand(interaction);
     }
   } catch (err) {
     logger.error('Command handling error', { error: String(err), command: commandName });
@@ -146,92 +173,227 @@ async function handleCommand(
   }
 }
 
-async function handleAlertCommand(
+function getSymbolForChannel(
+  channelId: string | null,
+  channelToSymbol: Record<string, string>,
+): string | null {
+  if (!channelId) return null;
+  return channelToSymbol[channelId] ?? null;
+}
+
+async function handleSetAlertCommand(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
+  deltaClient: DeltaClient | null,
+  channelToSymbol: Record<string, string>,
+  ethChannelId: string,
+  solChannelId: string,
 ): Promise<void> {
-  const symbol = interaction.options.getString('symbol', true).toUpperCase();
-  const condition = interaction.options.getString('condition', true);
-  const targetPrice = interaction.options.getNumber('target_price', true);
-  const discordChannelId = interaction.options.getString('channel_id', true);
+  const channelId = interaction.channelId;
+  const symbol = getSymbolForChannel(channelId, channelToSymbol);
 
-  const { valid, errors } = validateAlertInput({
-    symbol,
-    condition,
-    targetPrice,
-    discordChannelId,
-  });
-  if (!valid) {
-    await interaction.reply({ content: `Invalid input: ${errors.join(', ')}`, ephemeral: true });
+  if (!symbol) {
+    await interaction.reply({
+      content: 'Price alerts can only be configured in #ETHUSD or #SOLUSD.',
+      ephemeral: true,
+    });
     return;
   }
 
-  const alert: AlertConfig = {
-    id: generateId(),
-    symbol,
-    condition: condition as AlertConfig['condition'],
-    targetPrice,
-    discordChannelId,
-    enabled: true,
-    triggered: false,
-    createdAt: new Date().toISOString(),
-    triggeredAt: null,
-  };
+  const priceStr = interaction.options.getString('price', true);
+  const targetPrice = parseFloat(priceStr);
 
-  storage.save(alert);
+  const { valid, errors } = validateAlertInput({
+    price: targetPrice,
+    channelId: channelId ?? '',
+    ethChannelId,
+    solChannelId,
+    symbol,
+  });
+
+  if (!valid) {
+    await interaction.reply({ content: errors.join(', '), ephemeral: true });
+    return;
+  }
+
+  const existing = storage.getByChannel(channelId ?? '');
+
+  const now = new Date().toISOString();
+  let baselinePrice: number | null = null;
+  let direction: 'upward' | 'downward' = 'upward';
+
+  if (deltaClient) {
+    const priceSnapshot = deltaClient.getPrice(symbol);
+    if (priceSnapshot) {
+      baselinePrice = priceSnapshot.price;
+      direction = targetPrice >= (baselinePrice as number) ? 'upward' : 'downward';
+    }
+  }
+
+  const alertConfig: AlertConfig = existing
+    ? {
+        ...existing,
+        symbol,
+        channelId: channelId ?? '',
+        targetPrice,
+        baselinePrice,
+        direction,
+        enabled: true,
+        triggered: false,
+        createdAt: existing.createdAt,
+        triggeredAt: null,
+      }
+    : {
+        id: generateId(),
+        symbol,
+        channelId: channelId ?? '',
+        targetPrice,
+        baselinePrice,
+        direction,
+        enabled: true,
+        triggered: false,
+        createdAt: now,
+        triggeredAt: null,
+      };
+
+  storage.save(alertConfig);
+
+  const emoji = '✅';
   await interaction.reply({
-    content: `Alert created: ${symbol} ${condition} ${targetPrice} on channel ${discordChannelId}`,
+    content: `${emoji} ${symbol} alert set\nTarget: $${targetPrice.toLocaleString()}\nStatus: Active`,
     ephemeral: true,
   });
-  logger.info('Alert created via command', { id: alert.id, symbol });
+  logger.info('Alert created via command', { id: alertConfig.id, symbol });
+}
+
+async function handleRemoveAlertCommand(
+  interaction: ChatInputCommandInteraction,
+  storage: AlertStorage,
+  logger: Logger,
+  channelToSymbol: Record<string, string>,
+): Promise<void> {
+  const channelId = interaction.channelId;
+  const symbol = getSymbolForChannel(channelId, channelToSymbol);
+
+  if (!symbol) {
+    await interaction.reply({
+      content: 'Price alerts can only be configured in #ETHUSD or #SOLUSD.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const existing = storage.getByChannel(channelId ?? '');
+
+  if (!existing) {
+    await interaction.reply({
+      content: `No active alert in this channel.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  storage.deleteByChannel(channelId ?? '');
+
+  await interaction.reply({
+    content: `🗑️ ${symbol} alert removed.`,
+    ephemeral: true,
+  });
+  logger.info('Alert removed via command', { symbol, channelId });
+}
+
+async function handleAlertCommand(
+  interaction: ChatInputCommandInteraction,
+  storage: AlertStorage,
+  channelToSymbol: Record<string, string>,
+): Promise<void> {
+  const channelId = interaction.channelId;
+  const symbol = getSymbolForChannel(channelId, channelToSymbol);
+
+  if (!symbol) {
+    await interaction.reply({
+      content: 'Price alerts can only be configured in #ETHUSD or #SOLUSD.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const existing = storage.getByChannel(channelId ?? '');
+
+  if (!existing) {
+    await interaction.reply({
+      content: `No active ${symbol} alert.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const status = existing.triggered ? 'Triggered' : 'Active';
+
+  await interaction.reply({
+    content: `🔔 ${symbol} Alert\n\nTarget: $${existing.targetPrice.toLocaleString()}\nStatus: ${status}`,
+    ephemeral: true,
+  });
 }
 
 async function handleStatusCommand(
   interaction: ChatInputCommandInteraction,
-  deltaClient?: DeltaClient,
+  deltaClient: DeltaClient | null,
 ): Promise<void> {
   const uptime = process.uptime();
   const discordReady = true;
-  const deltaState: ConnectionState = deltaClient?.getConnectionState() ?? 'disconnected';
+  const deltaState = deltaClient?.getConnectionState() ?? 'disconnected';
   const deltaConnected = deltaState === 'connected';
   const lastDeltaUpdate = deltaClient
     ? new Date(deltaClient.getLastUpdateTimestamp()).toISOString()
     : 'never';
-  const symbols = deltaClient?.getMonitoredSymbols() ?? [];
+  const ethPrice = deltaClient?.getPrice('ETHUSD');
+  const solPrice = deltaClient?.getPrice('SOLUSD');
 
-  const embed = new EmbedBuilder()
-    .setTitle('Bot Status')
-    .addFields(
-      { name: 'Uptime', value: formatDuration(uptime), inline: true },
-      { name: 'Discord Ready', value: discordReady ? 'Yes' : 'No', inline: true },
-      { name: 'Delta Connected', value: deltaConnected ? 'Yes' : 'No', inline: true },
-      { name: 'Delta State', value: deltaState, inline: true },
-      { name: 'Last Delta Update', value: lastDeltaUpdate, inline: true },
-      { name: 'Monitored Symbols', value: symbols.join(', ') || 'None', inline: false },
-    );
+  const embed = new EmbedBuilder().setTitle('Bot Status').addFields(
+    { name: 'Uptime', value: formatDuration(uptime), inline: true },
+    { name: 'Discord Ready', value: discordReady ? 'Yes' : 'No', inline: true },
+    { name: 'Delta Connected', value: deltaConnected ? 'Yes' : 'No', inline: true },
+    { name: 'Delta State', value: deltaState, inline: true },
+    { name: 'Last Delta Update', value: lastDeltaUpdate, inline: true },
+    {
+      name: 'ETHUSD Price',
+      value: ethPrice ? `$${ethPrice.price.toLocaleString()}` : 'N/A',
+      inline: true,
+    },
+    {
+      name: 'SOLUSD Price',
+      value: solPrice ? `$${solPrice.price.toLocaleString()}` : 'N/A',
+      inline: true,
+    },
+  );
 
   await interaction.reply({ embeds: [embed] });
 }
 
-async function handleAlertsCommand(
-  interaction: ChatInputCommandInteraction,
-  storage: AlertStorage,
-): Promise<void> {
-  const alerts = storage.getAll();
-  if (alerts.length === 0) {
-    await interaction.reply({ content: 'No alerts configured.', ephemeral: true });
-    return;
-  }
-
-  const lines = alerts
-    .map(
-      (a) =>
-        `• \`${a.id}\` ${a.symbol} ${a.condition} ${a.targetPrice} | ${a.discordChannelId} | ${a.enabled ? 'enabled' : 'disabled'}${a.triggered ? ' | triggered' : ''}`,
-    )
-    .join('\n');
-
-  await interaction.reply({ content: `Alerts (${alerts.length}):\n${lines}`, ephemeral: true });
+async function handleHelpCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.reply({
+    content: [
+      '**Commands:**',
+      '',
+      '/set-alert price:<price>',
+      'Set or replace the alert for this crypto.',
+      '',
+      '/alert',
+      'Show the current alert.',
+      '',
+      '/remove-alert',
+      'Remove the current alert.',
+      '',
+      '/status',
+      'Show bot status and current prices.',
+      '',
+      '/help',
+      'Show commands.',
+    ].join('\n'),
+    ephemeral: true,
+  });
 }
 
 function generateId(): string {

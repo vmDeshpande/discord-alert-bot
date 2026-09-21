@@ -1,17 +1,17 @@
 export interface AlertConfig {
   id: string;
   symbol: string;
-  condition: AlertCondition;
+  channelId: string;
   targetPrice: number;
-  discordChannelId: string;
+  baselinePrice: number | null;
+  direction: 'upward' | 'downward';
   enabled: boolean;
   triggered: boolean;
   createdAt: string;
   triggeredAt: string | null;
 }
 
-export type AlertCondition =
-  'crossed_above' | 'crossed_below' | 'reaches_or_above' | 'reaches_or_below';
+export type AlertDirection = 'upward' | 'downward';
 
 export interface PriceUpdate {
   symbol: string;
@@ -21,8 +21,8 @@ export interface PriceUpdate {
 
 export interface TriggerResult {
   triggered: boolean;
-  condition: AlertCondition;
-  previousPrice: number;
-  currentPrice: number;
   targetPrice: number;
+  currentPrice: number;
+  baselinePrice: number | null;
+  direction: AlertDirection;
 }
