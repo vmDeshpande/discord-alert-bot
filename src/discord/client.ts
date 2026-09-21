@@ -99,6 +99,7 @@ export function createDiscordClient(
             .setDescription('Deactivate an alert')
             .addStringOption((o) => o.setName('id').setDescription('Alert ID').setRequired(true)),
         )
+        .addSubcommand((s) => s.setName('list').setDescription('List all alerts for this channel'))
         .toJSON(),
     ];
 
@@ -198,6 +199,9 @@ async function handleAlertSubCommand(
       break;
     case 'deactivate':
       await handleAlertDeactivate(interaction, storage, logger, channelId);
+      break;
+    case 'list':
+      await handleAlertList(interaction, storage, logger, channelId);
       break;
     default:
       await interaction.reply({ content: 'Unknown subcommand.', ephemeral: true });
@@ -362,7 +366,44 @@ async function handleAlertDeactivate(
     content: `⏸️ ${existing.symbol} alert deactivated.`,
     ephemeral: true,
   });
-  logger.info('Alert deactivated via command', { id, symbol: existing.symbol });
+  logger.info('Alert deactivated via command', { id: existing.id, symbol: existing.symbol });
+}
+
+export async function handleAlertList(
+  interaction: ChatInputCommandInteraction,
+  storage: AlertStorage,
+  logger: Logger,
+  channelId: string | null,
+): Promise<void> {
+  const alerts = storage.getAllByChannel(channelId ?? '');
+  const symbol = alerts.length > 0 ? alerts[0].symbol : 'ETHUSD';
+
+  if (alerts.length === 0) {
+    await interaction.reply({
+      content: `🔔 ${symbol} Alerts\n\nNo alerts configured.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  let message = `🔔 ${symbol} Alerts\n\n`;
+  for (const alert of alerts) {
+    let status: string;
+    if (alert.triggered) {
+      status = '✅ Triggered';
+    } else if (alert.active) {
+      status = '🟢 Active';
+    } else {
+      status = '🔕 Inactive';
+    }
+    message += `${alert.id}  $${alert.targetPrice.toLocaleString()}  ${status}\n`;
+  }
+
+  await interaction.reply({
+    content: message,
+    ephemeral: true,
+  });
+  logger.info('Alert list requested', { channelId, count: alerts.length });
 }
 
 function generateId(): string {
