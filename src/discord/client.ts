@@ -362,7 +362,8 @@ export async function handleAlertList(
   let message = `🔔 ${symbol} Alerts\n\n`;
   for (const alert of alerts) {
     const status: string = alert.active ? '🟢 Active' : '🔕 Inactive';
-    message += `${alert.id}  $${alert.targetPrice.toLocaleString()}  ${status}\n`;
+    // message += `${alert.id}  $${alert.targetPrice.toLocaleString()}  ${status}\n`;
+    message += `$${alert.targetPrice.toLocaleString()}  ${status}\n`;
   }
 
   await interaction.reply({
