@@ -7,6 +7,7 @@ import { createDeltaClient, DeltaClient } from './delta/client';
 import { createDiscordClient, DiscordClient } from './discord/client';
 import { createAlertEngine, AlertEngine } from './alerts/engine';
 import { AlertStorage } from './database/storage';
+
 let deltaClient: DeltaClient | null = null;
 let discordClient: DiscordClient | null = null;
 let alertEngine: AlertEngine | null = null;
@@ -75,6 +76,11 @@ async function main(): Promise<void> {
   }
 
   alertEngine = createAlertEngine(storage!, discordClient!, logger);
+
+  if (deltaClient) {
+    deltaClient.connect();
+    logger.info('Delta WebSocket connected');
+  }
 
   logger.info('Bot started successfully');
   logger.info('Delta WebSocket URL', { url: config.deltaWsUrl });

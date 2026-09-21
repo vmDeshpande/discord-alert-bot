@@ -16,17 +16,17 @@ A simple Discord bot that monitors real-time prices for **ETHUSD** and **SOLUSD*
 | #ETHUSD         | ETHUSD |
 | #SOLUSD         | SOLUSD |
 
-The channel determines which cryptocurrency the alert belongs to.
+Each channel has independent price alerts. Multiple alerts per channel are supported.
 
 ## Commands
 
-### /set-alert price:<price>
+### /alert set price:<price>
 
-Set or replace the price alert for this crypto channel.
+Create a new price alert for this crypto channel.
 
 Example in #ETHUSD:
 ```
-/set-alert price:4500
+/alert set price:4500
 ```
 
 Response:
@@ -36,31 +36,47 @@ Target: $4,500
 Status: Active
 ```
 
-### /alert
+Every call creates a new alert. Existing alerts are not affected.
 
-Show the current alert for this channel.
+### /alert list
 
-### /remove-alert
+Show all alerts for this crypto channel.
 
-Remove the alert for this channel.
-
-If no alert exists:
+Example:
 ```
-No active alert in this channel.
+🔔 ETHUSD Alerts
+
+#abc123  $4,500  🟢 Active
+#def456  $4,600  🟢 Active
+#ghi789  $4,700  🔕 Inactive
+#jkl012  $4,800  ✅ Triggered
 ```
 
-### /status
+### /alert activate id:<id>
 
-Show bot status, Discord/Delta connection state, and current prices.
+Activate a specific alert by ID. Only alerts in the current channel can be activated.
 
-### /help
+### /alert deactivate id:<id>
 
-Show all available commands.
+Deactivate a specific alert by ID. Only alerts in the current channel can be deactivated. The alert is not deleted.
+
+### /alert delete id:<id>
+
+Permanently delete a specific alert by ID. Only alerts in the current channel can be deleted.
+
+### /alert set requirements
+
+- Only works in #ETHUSD or #SOLUSD
+- Requires Delta price feed to be available
+- If price is unavailable: "Current price unavailable. Please try again shortly."
 
 ## How Alerts Work
 
-1. When you set an alert, the bot records the current price as a **baseline**
-2. The target direction (upward/downward) is determined by comparing target vs baseline
+1. When you set an alert, the bot records the current Delta price as a **baseline**
+2. The target direction is determined internally:
+   - Target > baseline → upward alert
+   - Target < baseline → downward alert
+   - Target = baseline → triggers immediately
 3. The bot monitors future price updates
 4. Alert triggers when price crosses the target in the set direction
 5. A single Discord message is sent, and the alert is marked as triggered
@@ -68,19 +84,29 @@ Show all available commands.
 
 ### Examples
 
-**Upward alert** (target above current price):
+**Upward alert** (target above baseline):
 ```
-Current: 4400 → Target: 4500
+Baseline: 4400 → Target: 4500
 4400 → 4450 → 4498 → 4503 → ALERT 🔔
 ```
 
-**Downward alert** (target below current price):
+**Downward alert** (target below baseline):
 ```
-Current: 4600 → Target: 4500
+Baseline: 4600 → Target: 4500
 4600 → 4550 → 4502 → 4497 → ALERT 🔔
 ```
 
-**Price jumps over target**: Still triggers in a single update.
+**Multiple alerts work independently:**
+```
+Baseline: 4400
+Alert 1: target 4500
+Alert 2: target 4600
+Alert 3: target 4700
+
+4500 → alert 1 fires
+4600 → alert 2 fires
+4700 → alert 3 fires
+```
 
 ## Requirements
 
@@ -109,8 +135,8 @@ cp .env.example .env
 | `DATABASE_PATH` | SQLite database file path | `./alerts.db` |
 | `LOG_LEVEL` | Log verbosity | `info` |
 | `DELTA_WS_URL` | Delta WebSocket URL | `wss://public-socket.india.delta.exchange` |
-| `ETHUSD_CHANNEL_ID` | Discord channel ID for ETHUSD alerts | *(required)* |
-| `SOLUSD_CHANNEL_ID` | Discord channel ID for SOLUSD alerts | *(required)* |
+| `ETHUSD_CHANNEL_ID` | Discord channel ID for ETHUSD | *(required)* |
+| `SOLUSD_CHANNEL_ID` | Discord channel ID for SOLUSD | *(required)* |
 
 ## Delta Exchange
 
@@ -127,11 +153,13 @@ Alerts are stored in SQLite. Schema:
 - `channel_id` - Discord channel ID
 - `target_price` - Target price to trigger at
 - `baseline_price` - Price when alert was created
-- `direction` - `upward` or `downward`
-- `enabled` - Whether alert is active
-- `triggered` - Whether alert has fired
+- `direction` - `upward` or `downward` (internal)
+- `active` - Whether alert is active (1) or inactive (0)
+- `triggered` - Whether alert has fired (1) or not (0)
 - `created_at` - Creation timestamp
 - `triggered_at` - When it fired (null if not triggered)
+
+Multiple alerts per channel are supported. Each alert has a unique ID.
 
 ## Running
 
@@ -167,14 +195,20 @@ npm run build
 - Verify Delta Exchange is online
 
 ### Alerts not triggering
-- Verify the price hasn't already passed the target when setting the alert
-- Use `/status` to check current prices
-- Check logs for connection status
+- Use `/alert set` to create alerts first
+- Use `/alert list` to view existing alerts
+- Check that alerts are Active (not Inactive)
+- Use `/alert set` - if price is unavailable, try again shortly
+
+### Alert creation fails
+- Ensure you're in #ETHUSD or #SOLUSD channel
+- Ensure Delta WebSocket is connected
+- Verify price is a positive number
 
 ## Limitations
 
-- One alert per crypto channel
 - No web dashboard (by design)
 - No user authentication (by design)
 - Uses Delta public market data only (no trading)
 - Requires ETHUSD_CHANNEL_ID and SOLUSD_CHANNEL_ID environment variables
+- No edit command - delete and recreate to change a target price

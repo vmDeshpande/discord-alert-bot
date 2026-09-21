@@ -5,7 +5,7 @@ export interface AlertConfig {
   targetPrice: number;
   baselinePrice: number | null;
   direction: 'upward' | 'downward';
-  enabled: boolean;
+  active: boolean;
   triggered: boolean;
   createdAt: string;
   triggeredAt: string | null;

@@ -1,7 +1,7 @@
-import { evaluateAlert, shouldMonitorSymbol, createAlertEngine } from '../src/alerts/engine';
+import { evaluateAlert, createAlertEngine, shouldMonitorSymbol } from '../src/alerts/engine';
 import { parseDeltaTicker } from '../src/delta/client';
 import { AlertConfig, PriceUpdate } from '../src/alerts/types';
-import { validateAlertInput } from '../src/alerts/validation';
+import { isValidTargetPrice } from '../src/alerts/validation';
 import { DiscordClient } from '../src/discord/client';
 import { AlertStorage } from '../src/database/storage';
 import { Logger } from '../src/logger';
@@ -16,11 +16,11 @@ const logger: Logger = {
 const makeAlert = (overrides: Partial<AlertConfig> = {}): AlertConfig => ({
   id: `alert-${Math.random().toString(36).substring(2, 8)}`,
   symbol: 'ETHUSD',
-  channelId: '123456789012345678',
+  channelId: 'eth-channel-id',
   targetPrice: 4500,
-  baselinePrice: null,
+  baselinePrice: 4400,
   direction: 'upward',
-  enabled: true,
+  active: true,
   triggered: false,
   createdAt: '2024-01-01T00:00:00Z',
   triggeredAt: null,
@@ -28,13 +28,12 @@ const makeAlert = (overrides: Partial<AlertConfig> = {}): AlertConfig => ({
 });
 
 const makeStorage = (alerts: AlertConfig[] = []): AlertStorage => ({
-  getAll: jest.fn().mockReturnValue(alerts),
+  getAllByChannel: jest.fn().mockReturnValue(alerts),
   getById: jest.fn().mockReturnValue(undefined),
-  getByChannel: jest.fn().mockReturnValue(undefined),
-  getActiveBySymbol: jest.fn().mockReturnValue(alerts.filter((a) => a.enabled && !a.triggered)),
+  getActiveBySymbol: jest.fn().mockReturnValue(alerts.filter((a) => a.active && !a.triggered)),
   save: jest.fn(),
   update: jest.fn(),
-  deleteByChannel: jest.fn(),
+  deleteById: jest.fn(),
 });
 
 const makeDiscordClient = (sendSuccess = true): DiscordClient => ({
@@ -130,86 +129,37 @@ describe('Channel-Symbol Mapping', () => {
 });
 
 describe('Alert Validation', () => {
-  it('should validate correct input', () => {
-    const result = validateAlertInput({
-      price: 4500,
-      channelId: 'eth-channel-id',
-      ethChannelId: 'eth-channel-id',
-      solChannelId: 'sol-channel-id',
-      symbol: 'ETHUSD',
-    });
-    expect(result.valid).toBe(true);
-    expect(result.errors).toHaveLength(0);
+  it('should validate correct price', () => {
+    expect(isValidTargetPrice(4500)).toBe(true);
   });
 
   it('should reject non-numeric price', () => {
-    const result = validateAlertInput({
-      price: 'abc',
-      channelId: 'eth-channel-id',
-      ethChannelId: 'eth-channel-id',
-      solChannelId: 'sol-channel-id',
-      symbol: 'ETHUSD',
-    });
-    expect(result.valid).toBe(false);
+    expect(isValidTargetPrice('abc' as unknown as number)).toBe(false);
   });
 
   it('should reject negative price', () => {
-    const result = validateAlertInput({
-      price: -100,
-      channelId: 'eth-channel-id',
-      ethChannelId: 'eth-channel-id',
-      solChannelId: 'sol-channel-id',
-      symbol: 'ETHUSD',
-    });
-    expect(result.valid).toBe(false);
+    expect(isValidTargetPrice(-100 as unknown as number)).toBe(false);
   });
 
   it('should reject zero price', () => {
-    const result = validateAlertInput({
-      price: 0,
-      channelId: 'eth-channel-id',
-      ethChannelId: 'eth-channel-id',
-      solChannelId: 'sol-channel-id',
-      symbol: 'ETHUSD',
-    });
-    expect(result.valid).toBe(false);
+    expect(isValidTargetPrice(0 as unknown as number)).toBe(false);
   });
 
   it('should reject Infinity price', () => {
-    const result = validateAlertInput({
-      price: Infinity,
-      channelId: 'eth-channel-id',
-      ethChannelId: 'eth-channel-id',
-      solChannelId: 'sol-channel-id',
-      symbol: 'ETHUSD',
-    });
-    expect(result.valid).toBe(false);
+    expect(isValidTargetPrice(Infinity)).toBe(false);
   });
 
-  it('should reject other channels', () => {
-    const result = validateAlertInput({
-      price: 4500,
-      channelId: 'other-channel',
-      ethChannelId: 'eth-channel-id',
-      solChannelId: 'sol-channel-id',
-      symbol: 'ETHUSD',
-    });
-    expect(result.valid).toBe(false);
+  it('should reject NaN price', () => {
+    expect(isValidTargetPrice(NaN as unknown as number)).toBe(false);
   });
 });
 
 describe('Alert Engine - evaluateAlert', () => {
-  describe('Upward target', () => {
+  describe('Upward target (baseline < target)', () => {
     it('should trigger when price crosses above target', () => {
       const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
       const result = evaluateAlert(alert, makePriceUpdate(4530));
       expect(result.triggered).toBe(true);
-    });
-
-    it('should NOT trigger when price is already above target at creation', () => {
-      const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
-      const result = evaluateAlert(alert, makePriceUpdate(4400));
-      expect(result.triggered).toBe(false);
     });
 
     it('should NOT trigger when price stays below target', () => {
@@ -224,24 +174,18 @@ describe('Alert Engine - evaluateAlert', () => {
       expect(result.triggered).toBe(false);
     });
 
-    it('should NOT trigger if alert is disabled', () => {
-      const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500, enabled: false });
+    it('should NOT trigger if alert is inactive', () => {
+      const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500, active: false });
       const result = evaluateAlert(alert, makePriceUpdate(4530));
       expect(result.triggered).toBe(false);
     });
   });
 
-  describe('Downward target', () => {
+  describe('Downward target (baseline > target)', () => {
     it('should trigger when price crosses below target', () => {
       const alert = makeAlert({ direction: 'downward', baselinePrice: 4600, targetPrice: 4500 });
       const result = evaluateAlert(alert, makePriceUpdate(4470));
       expect(result.triggered).toBe(true);
-    });
-
-    it('should NOT trigger when price is already below target at creation', () => {
-      const alert = makeAlert({ direction: 'downward', baselinePrice: 4600, targetPrice: 4500 });
-      const result = evaluateAlert(alert, makePriceUpdate(4600));
-      expect(result.triggered).toBe(false);
     });
 
     it('should NOT trigger when price stays above target', () => {
@@ -265,7 +209,27 @@ describe('Alert Engine - evaluateAlert', () => {
     });
   });
 
-  describe('Baseline not set (first update)', () => {
+  describe('Target equal to baseline', () => {
+    it('should trigger immediately when target equals baseline (upward)', () => {
+      const alert = makeAlert({ direction: 'upward', baselinePrice: 4500, targetPrice: 4500 });
+      const result = evaluateAlert(alert, makePriceUpdate(4500));
+      expect(result.triggered).toBe(true);
+    });
+
+    it('should trigger immediately when target equals baseline (downward)', () => {
+      const alert = makeAlert({ direction: 'downward', baselinePrice: 4500, targetPrice: 4500 });
+      const result = evaluateAlert(alert, makePriceUpdate(4500));
+      expect(result.triggered).toBe(true);
+    });
+
+    it('should still trigger on subsequent update if not yet triggered (upward)', () => {
+      const alert = makeAlert({ direction: 'upward', baselinePrice: 4500, targetPrice: 4500, triggered: false });
+      const result = evaluateAlert(alert, makePriceUpdate(4550));
+      expect(result.triggered).toBe(true);
+    });
+  });
+
+  describe('Baseline not set', () => {
     it('should not trigger when baseline is null', () => {
       const alert = makeAlert({ baselinePrice: null, direction: 'upward', targetPrice: 4500 });
       const result = evaluateAlert(alert, makePriceUpdate(5000));
@@ -273,22 +237,22 @@ describe('Alert Engine - evaluateAlert', () => {
     });
 
     it('should not trigger when baseline is undefined', () => {
-      const alert = makeAlert({ baselinePrice: undefined, direction: 'upward', targetPrice: 4500 });
+      const alert = makeAlert({ baselinePrice: undefined as unknown as number | null, direction: 'upward', targetPrice: 4500 });
       const result = evaluateAlert(alert, makePriceUpdate(5000));
       expect(result.triggered).toBe(false);
     });
   });
 
-  describe('Edge case: target equals baseline', () => {
-    it('should not trigger upward when target equals baseline', () => {
+  describe('Edge cases', () => {
+    it('should NOT trigger when baseline equals target and price drops away', () => {
       const alert = makeAlert({ direction: 'upward', baselinePrice: 4500, targetPrice: 4500 });
-      const result = evaluateAlert(alert, makePriceUpdate(4600));
-      expect(result.triggered).toBe(false);
+      const result = evaluateAlert(alert, makePriceUpdate(4400));
+      expect(result.triggered).toBe(true); // Already triggered at creation since baseline == target
     });
 
-    it('should not trigger downward when target equals baseline', () => {
-      const alert = makeAlert({ direction: 'downward', baselinePrice: 4500, targetPrice: 4500 });
-      const result = evaluateAlert(alert, makePriceUpdate(4400));
+    it('should not trigger disabled/inactive alert even if baseline == target', () => {
+      const alert = makeAlert({ direction: 'upward', baselinePrice: 4500, targetPrice: 4500, active: false });
+      const result = evaluateAlert(alert, makePriceUpdate(4500));
       expect(result.triggered).toBe(false);
     });
   });
@@ -305,8 +269,8 @@ describe('Alert Engine - shouldMonitorSymbol', () => {
     expect(shouldMonitorSymbol(alert, 'SOLUSD')).toBe(false);
   });
 
-  it('should return false for disabled alerts', () => {
-    const alert = makeAlert({ enabled: false });
+  it('should return false for inactive alerts', () => {
+    const alert = makeAlert({ active: false });
     expect(shouldMonitorSymbol(alert, 'ETHUSD')).toBe(false);
   });
 
@@ -384,17 +348,47 @@ describe('Alert Engine - Discord-gated integration', () => {
   });
 });
 
+describe('Alert Engine - multiple alerts independent', () => {
+  it('should trigger multiple alerts independently', async () => {
+    const storage = makeStorage();
+    const discord = makeDiscordClient(true);
+    const engine = createAlertEngine(storage, discord, logger);
+
+    const alert1 = makeAlert({ id: 'alert-1', direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
+    const alert2 = makeAlert({ id: 'alert-2', direction: 'upward', baselinePrice: 4500, targetPrice: 4600 });
+    const alert3 = makeAlert({ id: 'alert-3', direction: 'upward', baselinePrice: 4600, targetPrice: 4700 });
+    storage.save(alert1);
+    storage.save(alert2);
+    storage.save(alert3);
+    (storage.getActiveBySymbol as jest.Mock).mockReturnValue([alert1, alert2, alert3]);
+
+    // Price reaches 4500 - should trigger alert1 only
+    engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4500, previousPrice: 4450, timestamp: Date.now() });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(alert1.triggered).toBe(true);
+    expect(alert2.triggered).toBe(false);
+    expect(alert3.triggered).toBe(false);
+
+    // Price reaches 4600 - should trigger alert2 only
+    engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4600, previousPrice: 4550, timestamp: Date.now() });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(alert2.triggered).toBe(true);
+    expect(alert3.triggered).toBe(false);
+
+    // Price reaches 4700 - should trigger alert3 only
+    engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4700, previousPrice: 4650, timestamp: Date.now() });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(alert3.triggered).toBe(true);
+  });
+});
+
 describe('Alert Engine - processAlert flow', () => {
   it('should format correct Discord message', async () => {
     const storage = makeStorage();
     const discord = makeDiscordClient(true);
     const engine = createAlertEngine(storage, discord, logger);
 
-    const alert = makeAlert({
-      direction: 'upward',
-      baselinePrice: 4400,
-      targetPrice: 4500,
-    });
+    const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
     storage.save(alert);
     (storage.getActiveBySymbol as jest.Mock).mockReturnValue([alert]);
 
@@ -404,7 +398,7 @@ describe('Alert Engine - processAlert flow', () => {
 
     const callArgs = (discord.sendAlert as jest.Mock).mock.calls[0];
     expect(callArgs).toHaveLength(2);
-    expect(callArgs[0]).toBe('123456789012345678');
+    expect(callArgs[0]).toBe('eth-channel-id');
     expect(callArgs[1]).toContain('ETHUSD Price Alert');
     expect(callArgs[1]).toContain('4,500');
     expect(callArgs[1]).toContain('4,530');

@@ -26,7 +26,7 @@ export function initDatabase(dbPath: string, logger: Logger): DatabaseInitResult
       target_price REAL NOT NULL,
       baseline_price REAL,
       direction TEXT NOT NULL DEFAULT 'upward',
-      enabled INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
       triggered INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       triggered_at TEXT
@@ -52,6 +52,11 @@ export function initDatabase(dbPath: string, logger: Logger): DatabaseInitResult
   if (!columnNames.includes('baseline_price')) {
     db.exec('ALTER TABLE alerts ADD COLUMN baseline_price REAL');
     logger.info('Added baseline_price column');
+  }
+
+  if (!columnNames.includes('active')) {
+    db.exec('ALTER TABLE alerts ADD COLUMN active INTEGER NOT NULL DEFAULT 1');
+    logger.info('Added active column');
   }
 
   if (!columnNames.includes('direction')) {

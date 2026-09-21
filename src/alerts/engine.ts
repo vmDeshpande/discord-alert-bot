@@ -7,7 +7,6 @@ import { PriceUpdatePayload } from '../delta/client';
 export interface AlertEngine {
   onPriceUpdate: (payload: PriceUpdatePayload) => void;
   getTriggeredAlerts: () => AlertConfig[];
-  resetTriggeredAlert: (id: string) => void;
 }
 
 export function evaluateAlert(alert: AlertConfig, priceUpdate: PriceUpdate): TriggerResult {
@@ -26,18 +25,28 @@ export function evaluateAlert(alert: AlertConfig, priceUpdate: PriceUpdate): Tri
     };
   }
 
+  if (baselinePrice === targetPrice) {
+    return {
+      triggered: !alert.triggered && alert.active,
+      targetPrice,
+      currentPrice,
+      baselinePrice,
+      direction,
+    };
+  }
+
   let triggered = false;
 
   if (direction === 'upward') {
     triggered =
       !alert.triggered &&
-      alert.enabled &&
+      alert.active &&
       baselinePrice < targetPrice &&
       currentPrice >= targetPrice;
   } else {
     triggered =
       !alert.triggered &&
-      alert.enabled &&
+      alert.active &&
       baselinePrice > targetPrice &&
       currentPrice <= targetPrice;
   }
@@ -52,7 +61,7 @@ export function evaluateAlert(alert: AlertConfig, priceUpdate: PriceUpdate): Tri
 }
 
 export function shouldMonitorSymbol(alert: AlertConfig, symbol: string): boolean {
-  return alert.symbol === symbol && alert.enabled && !alert.triggered;
+  return alert.symbol === symbol && alert.active && !alert.triggered;
 }
 
 export function createAlertEngine(
@@ -116,12 +125,6 @@ export function createAlertEngine(
   return {
     onPriceUpdate,
     getTriggeredAlerts: (): AlertConfig[] => [...triggeredAlerts],
-    resetTriggeredAlert: (id: string): void => {
-      const idx = triggeredAlerts.findIndex((a) => a.id === id);
-      if (idx >= 0) {
-        triggeredAlerts.splice(idx, 1);
-      }
-    },
   };
 }
 

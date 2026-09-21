@@ -222,8 +222,6 @@ export function createDeltaClient(
     logger.info('Delta WebSocket disconnected (manual)');
   }
 
-  connect();
-
   return {
     connect: (): void => {
       manualDisconnect = false;
