@@ -12,7 +12,6 @@ import {
 import { Logger } from '../logger';
 import { AlertConfig } from '../alerts/types';
 import { AlertStorage } from '../database/storage';
-import { DeltaClient } from '../delta/client';
 import { isValidTargetPrice } from '../alerts/validation';
 
 const ETHUSD_SYMBOL = 'ETHUSD';
@@ -28,7 +27,6 @@ export interface DiscordClient {
 export function createDiscordClient(
   logger: Logger,
   storage: AlertStorage,
-  deltaClient: DeltaClient | null,
   ethChannelId: string,
   solChannelId: string,
 ): DiscordClient {
@@ -53,7 +51,6 @@ export function createDiscordClient(
       interaction as ChatInputCommandInteraction,
       storage,
       logger,
-      deltaClient,
       channelToSymbol,
     );
   });
@@ -149,14 +146,13 @@ async function handleCommand(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
-  deltaClient: DeltaClient | null,
   channelToSymbol: Record<string, string>,
 ): Promise<void> {
   const { commandName } = interaction;
 
   try {
     if (commandName === 'alert') {
-      await handleAlertSubCommand(interaction, storage, logger, deltaClient, channelToSymbol);
+      await handleAlertSubCommand(interaction, storage, logger, channelToSymbol);
     }
   } catch (err) {
     logger.error('Command handling error', { error: String(err), command: commandName });
@@ -176,7 +172,6 @@ async function handleAlertSubCommand(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
-  deltaClient: DeltaClient | null,
   channelToSymbol: Record<string, string>,
 ): Promise<void> {
   const subcommand = interaction.options.getSubcommand();
@@ -193,7 +188,7 @@ async function handleAlertSubCommand(
 
   switch (subcommand) {
     case 'set':
-      await handleAlertSet(interaction, storage, logger, deltaClient, channelId, symbol);
+      await handleAlertSet(interaction, storage, logger, channelId, symbol);
       break;
     case 'delete':
       await handleAlertDelete(interaction, storage, logger, channelId);
@@ -213,7 +208,6 @@ async function handleAlertSet(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
-  deltaClient: DeltaClient | null,
   channelId: string | null,
   symbol: string,
 ): Promise<void> {
@@ -229,20 +223,24 @@ async function handleAlertSet(
   }
 
   let baselinePrice: number | null = null;
-  if (deltaClient) {
-    const priceSnapshot = deltaClient.getPrice(symbol);
-    if (priceSnapshot) {
-      baselinePrice = priceSnapshot.price;
-    } else {
-      await interaction.reply({
-        content: 'Current price unavailable. Please try again shortly.',
-        ephemeral: true,
-      });
-      return;
+  try {
+    const response = await fetch(`https://api.india.delta.exchange/v2/tickers/${symbol}`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
-  } else {
+    const data = (await response.json()) as { close?: unknown };
+    if (typeof data.close === 'number') {
+      baselinePrice = data.close;
+    } else if (typeof data.close === 'string') {
+      baselinePrice = parseFloat(data.close);
+    }
+  } catch {
+    // fall through to error response
+  }
+
+  if (baselinePrice === null || baselinePrice === undefined || !Number.isFinite(baselinePrice)) {
     await interaction.reply({
-      content: 'Delta connection not available. Please try again shortly.',
+      content: 'Current price unavailable. Please try again shortly.',
       ephemeral: true,
     });
     return;

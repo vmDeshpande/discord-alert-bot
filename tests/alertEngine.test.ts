@@ -1,8 +1,7 @@
 import { evaluateAlert, createAlertEngine, shouldMonitorSymbol } from '../src/alerts/engine';
-import { parseDeltaTicker } from '../src/delta/client';
+import { parseDeltaTrade, ParsedTrade } from '../src/delta/client';
 import { AlertConfig, PriceUpdate } from '../src/alerts/types';
 import { isValidTargetPrice } from '../src/alerts/validation';
-import { DiscordClient } from '../src/discord/client';
 import { AlertStorage } from '../src/database/storage';
 import { Logger } from '../src/logger';
 
@@ -36,81 +35,145 @@ const makeStorage = (alerts: AlertConfig[] = []): AlertStorage => ({
   deleteById: jest.fn(),
 });
 
-const makeDiscordClient = (sendSuccess = true): DiscordClient => ({
-  start: jest.fn(),
-  stop: jest.fn(),
-  isReady: jest.fn().mockReturnValue(true),
-  sendAlert: jest.fn().mockResolvedValue(sendSuccess),
-});
-
 const makePriceUpdate = (price: number, timestamp = Date.now()): PriceUpdate => ({
   symbol: 'ETHUSD',
   price,
   timestamp,
 });
 
-describe('Delta Ticker Parser', () => {
-  describe('Valid ticker payloads', () => {
-    it('should parse compact ticker format', () => {
-      const result = parseDeltaTicker(JSON.stringify({ type: 'ticker', sy: 'ETHUSD', sp: 4500 }));
-      expect(result).not.toBeNull();
-      expect(result!.symbol).toBe('ETHUSD');
-      expect(result!.price).toBe(4500);
-    });
-
-    it('should parse compact ticker with SOLUSD', () => {
-      const result = parseDeltaTicker(JSON.stringify({ type: 'ticker', sy: 'SOLUSD', sp: 250 }));
-      expect(result).not.toBeNull();
-      expect(result!.symbol).toBe('SOLUSD');
-      expect(result!.price).toBe(250);
-    });
-
-    it('should parse compact ticker with string price', () => {
-      const result = parseDeltaTicker(JSON.stringify({ type: 'ticker', sy: 'ETHUSD', sp: '4500.50' }));
+describe('Delta Trade Parser', () => {
+  describe('Valid trade payloads', () => {
+    it('should parse ETHUSD trade', () => {
+      const payload = JSON.stringify({
+        type: 'trades',
+        p: '4500.50',
+        sy: 'ETHUSD',
+        t: 1234567890,
+        ts: 1234567891,
+      });
+      const result = parseDeltaTrade(payload);
       expect(result).not.toBeNull();
       expect(result!.symbol).toBe('ETHUSD');
       expect(result!.price).toBe(4500.5);
     });
 
-    it('should parse nested ticker with close field', () => {
-      const result = parseDeltaTicker(
-        JSON.stringify({ type: 'ticker', ticker: { symbol: 'ETHUSD', close: 4500 } }),
-      );
-      expect(result).not.toBeNull();
-      expect(result!.symbol).toBe('ETHUSD');
-      expect(result!.price).toBe(4500);
-    });
-
-    it('should parse nested ticker with sp field', () => {
-      const result = parseDeltaTicker(
-        JSON.stringify({ type: 'ticker', ticker: { sy: 'SOLUSD', sp: 250 } }),
-      );
+    it('should parse SOLUSD trade', () => {
+      const payload = JSON.stringify({
+        type: 'trades',
+        p: '250.25',
+        sy: 'SOLUSD',
+        t: 1234567890,
+        ts: 1234567891,
+      });
+      const result = parseDeltaTrade(payload);
       expect(result).not.toBeNull();
       expect(result!.symbol).toBe('SOLUSD');
-      expect(result!.price).toBe(250);
+      expect(result!.price).toBe(250.25);
+    });
+
+    it('should parse trade with integer price', () => {
+      const payload = JSON.stringify({
+        type: 'trades',
+        p: '100',
+        sy: 'ETHUSD',
+        t: 1234567890,
+        ts: 1234567891,
+      });
+      const result = parseDeltaTrade(payload);
+      expect(result).not.toBeNull();
+      expect(result!.price).toBe(100);
+    });
+
+    it('should parse Buffer WebSocket message', () => {
+      const raw = JSON.stringify({
+        type: 'trades',
+        p: '4500.50',
+        sy: 'ETHUSD',
+        t: 1234567890,
+        ts: 1234567891,
+      });
+      const buffer = Buffer.from(raw, 'utf-8');
+      const str = buffer.toString('utf-8');
+      const result = parseDeltaTrade(str);
+      expect(result).not.toBeNull();
+      expect(result!.symbol).toBe('ETHUSD');
+      expect(result!.price).toBe(4500.5);
     });
   });
 
-  describe('Invalid inputs', () => {
+  describe('Invalid trade payloads', () => {
     it('should return null for invalid JSON', () => {
-      expect(parseDeltaTicker('not json')).toBeNull();
+      expect(parseDeltaTrade('not json')).toBeNull();
     });
 
-    it('should return null for non-ticker type', () => {
-      expect(parseDeltaTicker(JSON.stringify({ type: 'trade', sy: 'ETHUSD', sp: 4500 }))).toBeNull();
+    it('should return null for non-trade type', () => {
+      expect(parseDeltaTrade(JSON.stringify({ type: 'ticker', sy: 'ETHUSD', sp: 4500 }))).toBeNull();
     });
 
     it('should return null for missing symbol', () => {
-      expect(parseDeltaTicker(JSON.stringify({ type: 'ticker', sp: 4500 }))).toBeNull();
+      expect(parseDeltaTrade(JSON.stringify({ type: 'trades', p: '4500' }))).toBeNull();
     });
 
     it('should return null for missing price', () => {
-      expect(parseDeltaTicker(JSON.stringify({ type: 'ticker', sy: 'ETHUSD' }))).toBeNull();
+      expect(parseDeltaTrade(JSON.stringify({ type: 'trades', sy: 'ETHUSD' }))).toBeNull();
     });
 
     it('should return null for non-numeric price', () => {
-      expect(parseDeltaTicker(JSON.stringify({ type: 'ticker', sy: 'ETHUSD', sp: 'abc' }))).toBeNull();
+      expect(parseDeltaTrade(JSON.stringify({ type: 'trades', sy: 'ETHUSD', p: 'abc' }))).toBeNull();
     });
+
+    it('should return null for NaN price', () => {
+      expect(parseDeltaTrade(JSON.stringify({ type: 'trades', sy: 'ETHUSD', p: NaN }))).toBeNull();
+    });
+  });
+
+  describe('Unsupported symbols', () => {
+    it('should reject unsupported symbol', () => {
+      const result = parseDeltaTrade(
+        JSON.stringify({ type: 'trades', p: '100', sy: 'BTCUSD', t: 1, ts: 2 }),
+      );
+      expect(result).toBeNull();
+    });
+  });
+});
+
+describe('REST Baseline Price', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  it('should fetch baseline price from REST API', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ close: 4499.99 }),
+    } as unknown as Response);
+
+    const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
+    const data = (await response.json()) as { close: number };
+    expect(data.close).toBe(4499.99);
+    expect(typeof data.close).toBe('number');
+  });
+
+  it('should handle string close price from REST', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ close: '4499.99' }),
+    } as unknown as Response);
+
+    const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
+    const data = (await response.json()) as { close: string };
+    const price = typeof data.close === 'number' ? data.close : parseFloat(data.close);
+    expect(price).toBe(4499.99);
+  });
+
+  it('should handle REST API failure', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as unknown as Response);
+
+    const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
+    expect(response.ok).toBe(false);
   });
 });
 
@@ -247,10 +310,10 @@ describe('Alert Engine - evaluateAlert', () => {
     it('should NOT trigger when baseline equals target and price drops away', () => {
       const alert = makeAlert({ direction: 'upward', baselinePrice: 4500, targetPrice: 4500 });
       const result = evaluateAlert(alert, makePriceUpdate(4400));
-      expect(result.triggered).toBe(true); // Already triggered at creation since baseline == target
+      expect(result.triggered).toBe(true);
     });
 
-    it('should not trigger disabled/inactive alert even if baseline == target', () => {
+    it('should not trigger inactive alert even if baseline == target', () => {
       const alert = makeAlert({ direction: 'upward', baselinePrice: 4500, targetPrice: 4500, active: false });
       const result = evaluateAlert(alert, makePriceUpdate(4500));
       expect(result.triggered).toBe(false);
@@ -283,7 +346,12 @@ describe('Alert Engine - shouldMonitorSymbol', () => {
 describe('Alert Engine - Discord-gated integration', () => {
   it('should mark alert triggered when Discord delivery succeeds', async () => {
     const storage = makeStorage();
-    const discord = makeDiscordClient(true);
+    const discord = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      isReady: jest.fn().mockReturnValue(true),
+      sendAlert: jest.fn().mockResolvedValue(true),
+    };
     const engine = createAlertEngine(storage, discord, logger);
 
     const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
@@ -302,7 +370,12 @@ describe('Alert Engine - Discord-gated integration', () => {
 
   it('should NOT mark alert triggered when Discord delivery fails', async () => {
     const storage = makeStorage();
-    const discord = makeDiscordClient(false);
+    const discord = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      isReady: jest.fn().mockReturnValue(true),
+      sendAlert: jest.fn().mockResolvedValue(false),
+    };
     const engine = createAlertEngine(storage, discord, logger);
 
     const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
@@ -321,7 +394,12 @@ describe('Alert Engine - Discord-gated integration', () => {
 
   it('should send alert exactly once', async () => {
     const storage = makeStorage();
-    const discord = makeDiscordClient(true);
+    const discord = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      isReady: jest.fn().mockReturnValue(true),
+      sendAlert: jest.fn().mockResolvedValue(true),
+    };
     const engine = createAlertEngine(storage, discord, logger);
 
     const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
@@ -339,7 +417,12 @@ describe('Alert Engine - Discord-gated integration', () => {
 
   it('should handle price updates for symbols with no alerts', () => {
     const storage = makeStorage();
-    const discord = makeDiscordClient(true);
+    const discord = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      isReady: jest.fn().mockReturnValue(true),
+      sendAlert: jest.fn().mockResolvedValue(true),
+    };
     const engine = createAlertEngine(storage, discord, logger);
 
     const priceUpdate = { symbol: 'SOLUSD', currentPrice: 250, previousPrice: 240, timestamp: Date.now() };
@@ -351,7 +434,12 @@ describe('Alert Engine - Discord-gated integration', () => {
 describe('Alert Engine - multiple alerts independent', () => {
   it('should trigger multiple alerts independently', async () => {
     const storage = makeStorage();
-    const discord = makeDiscordClient(true);
+    const discord = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      isReady: jest.fn().mockReturnValue(true),
+      sendAlert: jest.fn().mockResolvedValue(true),
+    };
     const engine = createAlertEngine(storage, discord, logger);
 
     const alert1 = makeAlert({ id: 'alert-1', direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
@@ -362,20 +450,17 @@ describe('Alert Engine - multiple alerts independent', () => {
     storage.save(alert3);
     (storage.getActiveBySymbol as jest.Mock).mockReturnValue([alert1, alert2, alert3]);
 
-    // Price reaches 4500 - should trigger alert1 only
     engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4500, previousPrice: 4450, timestamp: Date.now() });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(alert1.triggered).toBe(true);
     expect(alert2.triggered).toBe(false);
     expect(alert3.triggered).toBe(false);
 
-    // Price reaches 4600 - should trigger alert2 only
     engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4600, previousPrice: 4550, timestamp: Date.now() });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(alert2.triggered).toBe(true);
     expect(alert3.triggered).toBe(false);
 
-    // Price reaches 4700 - should trigger alert3 only
     engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4700, previousPrice: 4650, timestamp: Date.now() });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(alert3.triggered).toBe(true);
@@ -385,7 +470,12 @@ describe('Alert Engine - multiple alerts independent', () => {
 describe('Alert Engine - processAlert flow', () => {
   it('should format correct Discord message', async () => {
     const storage = makeStorage();
-    const discord = makeDiscordClient(true);
+    const discord = {
+      start: jest.fn(),
+      stop: jest.fn(),
+      isReady: jest.fn().mockReturnValue(true),
+      sendAlert: jest.fn().mockResolvedValue(true),
+    };
     const engine = createAlertEngine(storage, discord, logger);
 
     const alert = makeAlert({ direction: 'upward', baselinePrice: 4400, targetPrice: 4500 });
@@ -402,5 +492,18 @@ describe('Alert Engine - processAlert flow', () => {
     expect(callArgs[1]).toContain('ETHUSD Price Alert');
     expect(callArgs[1]).toContain('4,500');
     expect(callArgs[1]).toContain('4,530');
+  });
+});
+
+describe('Delta Trade - ParsedTrade type', () => {
+  it('should have correct type structure', () => {
+    const trade: ParsedTrade = {
+      symbol: 'ETHUSD',
+      price: 4500.5,
+      timestamp: 1234567890,
+    };
+    expect(trade.symbol).toBe('ETHUSD');
+    expect(trade.price).toBe(4500.5);
+    expect(trade.timestamp).toBe(1234567890);
   });
 });

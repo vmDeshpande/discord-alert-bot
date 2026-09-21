@@ -35,13 +35,15 @@ export interface DeltaClient {
   getMonitoredSymbols: () => string[];
 }
 
-export interface ParsedTicker {
+export interface ParsedTrade {
   symbol: string;
   price: number;
   timestamp: number;
 }
 
-export function parseDeltaTicker(data: string): ParsedTicker | null {
+const SUPPORTED_SYMBOLS = ['ETHUSD', 'SOLUSD'];
+
+export function parseDeltaTrade(data: string): ParsedTrade | null {
   let msg: Record<string, unknown>;
   try {
     msg = JSON.parse(data);
@@ -50,34 +52,12 @@ export function parseDeltaTicker(data: string): ParsedTicker | null {
   }
 
   if (typeof msg !== 'object' || msg === null) return null;
-  if (msg.type !== 'ticker') return null;
+  if (msg.type !== 'trades') return null;
 
-  let symbol: string | undefined;
-  let priceStr: string | number | undefined;
+  if (!SUPPORTED_SYMBOLS.includes(msg.sy as string)) return null;
 
-  if (msg.sy !== undefined && msg.sp !== undefined) {
-    symbol = typeof msg.sy === 'string' ? msg.sy : undefined;
-    priceStr = typeof msg.sp === 'string' || typeof msg.sp === 'number' ? msg.sp : undefined;
-  } else if (msg.ticker !== undefined && typeof msg.ticker === 'object') {
-    const ticker = msg.ticker as Record<string, unknown>;
-    symbol =
-      typeof ticker.symbol === 'string'
-        ? ticker.symbol
-        : typeof ticker.sy === 'string'
-          ? ticker.sy
-          : undefined;
-    const close = ticker.close;
-    priceStr =
-      typeof close === 'string' || typeof close === 'number'
-        ? close
-        : typeof ticker.sp === 'string' || typeof ticker.sp === 'number'
-          ? ticker.sp
-          : typeof ticker.mark_price === 'string' || typeof ticker.mark_price === 'number'
-            ? ticker.mark_price
-            : typeof ticker.mp === 'string' || typeof ticker.mp === 'number'
-              ? ticker.mp
-              : undefined;
-  }
+  const symbol = typeof msg.sy === 'string' ? msg.sy : undefined;
+  const priceStr = msg.p;
 
   if (!symbol) return null;
   if (priceStr === undefined || priceStr === null) return null;
@@ -101,6 +81,8 @@ export function createDeltaClient(
     new Map();
   let lastUpdateTimestamp = 0;
   let manualDisconnect = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let lastActivityTime = 0;
 
   function getReconnectDelay(): number {
     const base = config.reconnectIntervalMs;
@@ -114,17 +96,18 @@ export function createDeltaClient(
     try {
       const msg = JSON.stringify({
         type: 'subscribe',
-        payload: { channels: [{ name: 'ticker', symbols: config.symbols }] },
+        payload: { channels: [{ name: 'trades', symbols: config.symbols }] },
       });
       ws.send(msg);
-      logger.info('Subscribed to Delta ticker', { symbols: config.symbols });
+      logger.info('Subscribed to Delta trades', { symbols: config.symbols });
     } catch (err) {
       logger.error('Failed to send subscribe message', { error: String(err) });
     }
   }
 
   function handleMessage(raw: string): void {
-    const parsed = parseDeltaTicker(raw);
+    lastActivityTime = Date.now();
+    const parsed = parseDeltaTrade(raw);
     if (!parsed) return;
 
     const entry = priceHistory.get(parsed.symbol);
@@ -144,10 +127,48 @@ export function createDeltaClient(
     });
   }
 
+  function startHeartbeat(): void {
+    stopHeartbeat();
+    heartbeatTimer = setInterval((): void => {
+      if (connectionState === 'connected') {
+        const now = Date.now();
+        if (now - lastActivityTime > 30000) {
+          logger.warn('Delta WebSocket stale connection, reconnecting');
+          if (ws) {
+            try {
+              ws.close();
+            } catch {
+              /* ignore */
+            }
+            ws = null;
+          }
+          setState('disconnected');
+          if (!manualDisconnect) {
+            const delay = getReconnectDelay();
+            reconnectAttempts++;
+            logger.info('Reconnecting to Delta in ' + Math.round(delay / 1000) + 's');
+            setState('reconnecting');
+            reconnectTimer = setTimeout(connect, delay);
+          }
+        }
+      }
+    }, 10000);
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+  }
+
   function setState(state: ConnectionState): void {
     connectionState = state;
     if (state === 'connected') {
       reconnectAttempts = 0;
+      startHeartbeat();
+    } else {
+      stopHeartbeat();
     }
   }
 
@@ -174,9 +195,15 @@ export function createDeltaClient(
       });
 
       ws.on('message', (data: WebSocket.Data): void => {
+        let raw: string;
         if (typeof data === 'string') {
-          handleMessage(data);
+          raw = data;
+        } else if (Buffer.isBuffer(data)) {
+          raw = data.toString('utf-8');
+        } else {
+          return;
         }
+        handleMessage(raw);
       });
 
       ws.on('close', (): void => {
@@ -210,6 +237,7 @@ export function createDeltaClient(
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    stopHeartbeat();
     if (ws) {
       try {
         ws.close();

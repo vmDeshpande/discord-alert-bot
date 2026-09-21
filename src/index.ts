@@ -59,13 +59,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    discordClient = createDiscordClient(
-      logger,
-      storage!,
-      deltaClient,
-      config.ethChannelId,
-      config.solChannelId,
-    );
+    discordClient = createDiscordClient(logger, storage!, config.ethChannelId, config.solChannelId);
     if (config.discordToken) {
       await discordClient.start(config.discordToken);
     } else {
