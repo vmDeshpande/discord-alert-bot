@@ -8,6 +8,9 @@ import {
   Events,
   ChatInputCommandInteraction,
   Interaction,
+  SelectMenuInteraction,
+  ActionRowBuilder,
+  SelectMenuBuilder,
 } from 'discord.js';
 import { Logger } from '../logger';
 import { AlertConfig } from '../alerts/types';
@@ -46,13 +49,16 @@ export function createDiscordClient(
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction): Promise<void> => {
-    if (!interaction.isChatInputCommand()) return;
-    await handleCommand(
-      interaction as ChatInputCommandInteraction,
-      storage,
-      logger,
-      channelToSymbol,
-    );
+    if (interaction.isChatInputCommand()) {
+      await handleCommand(
+        interaction as ChatInputCommandInteraction,
+        storage,
+        logger,
+        channelToSymbol,
+      );
+    } else if (interaction.isSelectMenu()) {
+      await handleSelectMenu(interaction as SelectMenuInteraction, storage, logger);
+    }
   });
 
   client.on('disconnect', (): void => {
@@ -81,24 +87,9 @@ export function createDiscordClient(
               o.setName('price').setDescription('Target price').setRequired(true),
             ),
         )
-        .addSubcommand((s) =>
-          s
-            .setName('delete')
-            .setDescription('Delete an alert')
-            .addStringOption((o) => o.setName('id').setDescription('Alert ID').setRequired(true)),
-        )
-        .addSubcommand((s) =>
-          s
-            .setName('activate')
-            .setDescription('Activate an alert')
-            .addStringOption((o) => o.setName('id').setDescription('Alert ID').setRequired(true)),
-        )
-        .addSubcommand((s) =>
-          s
-            .setName('deactivate')
-            .setDescription('Deactivate an alert')
-            .addStringOption((o) => o.setName('id').setDescription('Alert ID').setRequired(true)),
-        )
+        .addSubcommand((s) => s.setName('delete').setDescription('Delete an alert'))
+        .addSubcommand((s) => s.setName('activate').setDescription('Activate an alert'))
+        .addSubcommand((s) => s.setName('deactivate').setDescription('Deactivate an alert'))
         .addSubcommand((s) => s.setName('list').setDescription('List all alerts for this channel'))
         .toJSON(),
     ];
@@ -157,7 +148,7 @@ async function handleCommand(
     }
   } catch (err) {
     logger.error('Command handling error', { error: String(err), command: commandName });
-    await interaction.reply({ content: 'An error occurred.', ephemeral: true }).catch(() => {});
+    await interaction.reply({ content: 'An error occurred.' }).catch(() => {});
   }
 }
 
@@ -167,6 +158,25 @@ function getSymbolForChannel(
 ): string | null {
   if (!channelId) return null;
   return channelToSymbol[channelId] ?? null;
+}
+
+function buildAlertSelectMenu(
+  alerts: AlertConfig[],
+  customId: string,
+  placeholder: string,
+): ActionRowBuilder<SelectMenuBuilder> {
+  const row = new ActionRowBuilder<SelectMenuBuilder>().addComponents(
+    new SelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions(
+        alerts.map((a) => ({
+          label: `${a.symbol} $${a.targetPrice.toLocaleString()} - ${a.active ? 'Active' : 'Inactive'}`,
+          value: a.id,
+        })),
+      ),
+  );
+  return row;
 }
 
 async function handleAlertSubCommand(
@@ -182,7 +192,6 @@ async function handleAlertSubCommand(
   if (!symbol) {
     await interaction.reply({
       content: 'Price alerts can only be configured in #ETHUSD or #SOLUSD.',
-      ephemeral: true,
     });
     return;
   }
@@ -204,11 +213,11 @@ async function handleAlertSubCommand(
       await handleAlertList(interaction, storage, logger, channelId);
       break;
     default:
-      await interaction.reply({ content: 'Unknown subcommand.', ephemeral: true });
+      await interaction.reply({ content: 'Unknown subcommand.' });
   }
 }
 
-async function handleAlertSet(
+export async function handleAlertSet(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
@@ -221,7 +230,6 @@ async function handleAlertSet(
   if (!isValidTargetPrice(targetPrice)) {
     await interaction.reply({
       content: 'price must be a positive finite number.',
-      ephemeral: true,
     });
     return;
   }
@@ -251,7 +259,6 @@ async function handleAlertSet(
   ) {
     await interaction.reply({
       content: 'Current price unavailable. Please try again shortly.',
-      ephemeral: true,
     });
     return;
   }
@@ -275,104 +282,65 @@ async function handleAlertSet(
 
   await interaction.reply({
     content: `✅ ${symbol} alert set\nTarget: $${targetPrice.toLocaleString()}\nStatus: Active`,
-    ephemeral: true,
   });
   logger.info('Alert created via command', { id: alertConfig.id, symbol });
 }
 
-async function handleAlertDelete(
+export async function handleAlertDelete(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
   channelId: string | null,
 ): Promise<void> {
-  const id = interaction.options.getString('id', true);
-  const existing = storage.getById(id);
+  const alerts = storage.getAllByChannel(channelId ?? '');
 
-  if (!existing) {
-    await interaction.reply({ content: 'Alert not found.', ephemeral: true });
+  if (alerts.length === 0) {
+    await interaction.reply({ content: 'No alerts to delete in this channel.' });
     return;
   }
 
-  if (existing.channelId !== (channelId ?? '')) {
-    await interaction.reply({
-      content: 'This alert does not belong to this channel.',
-      ephemeral: true,
-    });
-    return;
-  }
-
-  storage.deleteById(id);
-
-  await interaction.reply({
-    content: `🗑️ ${existing.symbol} alert deleted.`,
-    ephemeral: true,
-  });
-  logger.info('Alert deleted via command', { id, symbol: existing.symbol });
+  const row = buildAlertSelectMenu(alerts, 'alert:delete', 'Select an alert to delete');
+  await interaction.reply({ content: 'Select an alert to delete:', components: [row.toJSON()] });
+  logger.info('Alert delete menu shown', { channelId, count: alerts.length });
 }
 
-async function handleAlertActivate(
+export async function handleAlertActivate(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
   channelId: string | null,
 ): Promise<void> {
-  const id = interaction.options.getString('id', true);
-  const existing = storage.getById(id);
+  const alerts = storage.getAllByChannel(channelId ?? '').filter((a) => !a.active);
 
-  if (!existing) {
-    await interaction.reply({ content: 'Alert not found.', ephemeral: true });
+  if (alerts.length === 0) {
+    await interaction.reply({ content: 'No inactive alerts to activate in this channel.' });
     return;
   }
 
-  if (existing.channelId !== (channelId ?? '')) {
-    await interaction.reply({
-      content: 'This alert does not belong to this channel.',
-      ephemeral: true,
-    });
-    return;
-  }
-
-  existing.active = true;
-  storage.update(existing);
-
-  await interaction.reply({
-    content: `✅ ${existing.symbol} alert activated.`,
-    ephemeral: true,
-  });
-  logger.info('Alert activated via command', { id, symbol: existing.symbol });
+  const row = buildAlertSelectMenu(alerts, 'alert:activate', 'Select an alert to activate');
+  await interaction.reply({ content: 'Select an alert to activate:', components: [row.toJSON()] });
+  logger.info('Alert activate menu shown', { channelId, count: alerts.length });
 }
 
-async function handleAlertDeactivate(
+export async function handleAlertDeactivate(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
   channelId: string | null,
 ): Promise<void> {
-  const id = interaction.options.getString('id', true);
-  const existing = storage.getById(id);
+  const alerts = storage.getAllByChannel(channelId ?? '').filter((a) => a.active);
 
-  if (!existing) {
-    await interaction.reply({ content: 'Alert not found.', ephemeral: true });
+  if (alerts.length === 0) {
+    await interaction.reply({ content: 'No active alerts to deactivate in this channel.' });
     return;
   }
 
-  if (existing.channelId !== (channelId ?? '')) {
-    await interaction.reply({
-      content: 'This alert does not belong to this channel.',
-      ephemeral: true,
-    });
-    return;
-  }
-
-  existing.active = false;
-  storage.update(existing);
-
+  const row = buildAlertSelectMenu(alerts, 'alert:deactivate', 'Select an alert to deactivate');
   await interaction.reply({
-    content: `⏸️ ${existing.symbol} alert deactivated.`,
-    ephemeral: true,
+    content: 'Select an alert to deactivate:',
+    components: [row.toJSON()],
   });
-  logger.info('Alert deactivated via command', { id: existing.id, symbol: existing.symbol });
+  logger.info('Alert deactivate menu shown', { channelId, count: alerts.length });
 }
 
 export async function handleAlertList(
@@ -387,29 +355,77 @@ export async function handleAlertList(
   if (alerts.length === 0) {
     await interaction.reply({
       content: `🔔 ${symbol} Alerts\n\nNo alerts configured.`,
-      ephemeral: true,
     });
     return;
   }
 
   let message = `🔔 ${symbol} Alerts\n\n`;
   for (const alert of alerts) {
-    let status: string;
-    if (alert.triggered) {
-      status = '✅ Triggered';
-    } else if (alert.active) {
-      status = '🟢 Active';
-    } else {
-      status = '🔕 Inactive';
-    }
+    const status: string = alert.active ? '🟢 Active' : '🔕 Inactive';
     message += `${alert.id}  $${alert.targetPrice.toLocaleString()}  ${status}\n`;
   }
 
   await interaction.reply({
     content: message,
-    ephemeral: true,
   });
   logger.info('Alert list requested', { channelId, count: alerts.length });
+}
+
+export async function handleSelectMenu(
+  interaction: SelectMenuInteraction,
+  storage: AlertStorage,
+  logger: Logger,
+): Promise<void> {
+  const { customId, values } = interaction;
+
+  if (
+    customId !== 'alert:delete' &&
+    customId !== 'alert:activate' &&
+    customId !== 'alert:deactivate'
+  ) {
+    return;
+  }
+
+  const alertId = values[0];
+  const channelId = interaction.channelId;
+  const existing = storage.getById(alertId);
+
+  if (!existing) {
+    await interaction
+      .update({ content: 'Alert not found. It may have already been deleted.' })
+      .catch(() => {});
+    return;
+  }
+
+  if (existing.channelId !== channelId) {
+    await interaction
+      .update({ content: 'This alert does not belong to this channel.' })
+      .catch(() => {});
+    return;
+  }
+
+  try {
+    if (customId === 'alert:delete') {
+      storage.deleteById(alertId);
+      await interaction.update({ content: `🗑️ ${existing.symbol} alert deleted.` });
+      logger.info('Alert deleted via select menu', { id: alertId, symbol: existing.symbol });
+    } else if (customId === 'alert:activate') {
+      existing.active = true;
+      storage.update(existing);
+      await interaction.update({ content: `✅ ${existing.symbol} alert activated.` });
+      logger.info('Alert activated via select menu', { id: alertId, symbol: existing.symbol });
+    } else if (customId === 'alert:deactivate') {
+      existing.active = false;
+      storage.update(existing);
+      await interaction.update({ content: `⏸️ ${existing.symbol} alert deactivated.` });
+      logger.info('Alert deactivated via select menu', { id: alertId, symbol: existing.symbol });
+    }
+  } catch (err) {
+    logger.error('Failed to process select menu action', { error: String(err), alertId });
+    await interaction
+      .update({ content: 'An error occurred while processing the action.' })
+      .catch(() => {});
+  }
 }
 
 function generateId(): string {

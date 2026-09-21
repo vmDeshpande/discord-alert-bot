@@ -85,11 +85,9 @@ export function createAlertEngine(
     try {
       const sent = await discordClient.sendAlert(alert.channelId, message);
       if (sent) {
-        alert.triggered = true;
-        alert.triggeredAt = new Date().toISOString();
-        storage.update(alert);
+        storage.deleteById(alert.id);
         triggeredAlerts.push(alert);
-        logger.info('Alert state updated', { id: alert.id, triggered: true });
+        logger.info('Alert deleted after trigger', { id: alert.id });
       } else {
         logger.error('Discord alert delivery failed, alert remains active', {
           alertId: alert.id,

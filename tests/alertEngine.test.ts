@@ -1,11 +1,19 @@
-import { evaluateAlert, createAlertEngine, shouldMonitorSymbol } from '../src/alerts/engine';
+import {
+  evaluateAlert,
+  createAlertEngine,
+  shouldMonitorSymbol,
+} from '../src/alerts/engine';
 import { parseDeltaTrade, ParsedTrade } from '../src/delta/client';
 import { AlertConfig, PriceUpdate } from '../src/alerts/types';
 import { isValidTargetPrice } from '../src/alerts/validation';
 import { AlertStorage } from '../src/database/storage';
 import { Logger } from '../src/logger';
-import { handleAlertList } from '../src/discord/client';
-import { ChatInputCommandInteraction } from 'discord.js';
+import {
+  handleAlertList,
+  handleAlertSet,
+  handleSelectMenu,
+} from '../src/discord/client';
+import { ChatInputCommandInteraction, SelectMenuInteraction } from 'discord.js';
 
 const logger: Logger = {
   info: jest.fn(),
@@ -400,12 +408,11 @@ describe('Alert Engine - Discord-gated integration', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
 
     expect(discord.sendAlert).toHaveBeenCalled();
-    expect(alert.triggered).toBe(true);
-    expect(alert.triggeredAt).toBeTruthy();
-    expect(storage.update).toHaveBeenCalledWith(alert);
+    expect(storage.deleteById).toHaveBeenCalledWith(alert.id);
+    expect(storage.update).not.toHaveBeenCalled();
   });
 
-  it('should NOT mark alert triggered when Discord delivery fails', async () => {
+  it('should NOT delete alert when Discord delivery fails', async () => {
     const storage = makeStorage();
     const discord = {
       start: jest.fn(),
@@ -426,6 +433,7 @@ describe('Alert Engine - Discord-gated integration', () => {
     expect(discord.sendAlert).toHaveBeenCalled();
     expect(alert.triggered).toBe(false);
     expect(alert.triggeredAt).toBeNull();
+    expect(storage.deleteById).not.toHaveBeenCalled();
     expect(storage.update).not.toHaveBeenCalled();
   });
 
@@ -449,7 +457,7 @@ describe('Alert Engine - Discord-gated integration', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
 
     expect(discord.sendAlert).toHaveBeenCalledTimes(1);
-    expect(alert.triggered).toBe(true);
+    expect(storage.deleteById).toHaveBeenCalledWith(alert.id);
   });
 
   it('should handle price updates for symbols with no alerts', () => {
@@ -489,18 +497,18 @@ describe('Alert Engine - multiple alerts independent', () => {
 
     engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4500, previousPrice: 4450, timestamp: Date.now() });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    expect(alert1.triggered).toBe(true);
-    expect(alert2.triggered).toBe(false);
-    expect(alert3.triggered).toBe(false);
+    expect(storage.deleteById).toHaveBeenCalledWith('alert-1');
+    expect(storage.deleteById).not.toHaveBeenCalledWith('alert-2');
+    expect(storage.deleteById).not.toHaveBeenCalledWith('alert-3');
 
     engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4600, previousPrice: 4550, timestamp: Date.now() });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    expect(alert2.triggered).toBe(true);
-    expect(alert3.triggered).toBe(false);
+    expect(storage.deleteById).toHaveBeenCalledWith('alert-2');
+    expect(storage.deleteById).not.toHaveBeenCalledWith('alert-3');
 
     engine.onPriceUpdate({ symbol: 'ETHUSD', currentPrice: 4700, previousPrice: 4650, timestamp: Date.now() });
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
-    expect(alert3.triggered).toBe(true);
+    expect(storage.deleteById).toHaveBeenCalledWith('alert-3');
   });
 });
 
@@ -606,29 +614,10 @@ describe('Alert List Command', () => {
     expect(call.content).toContain('Inactive');
   });
 
-  it('should list triggered alerts', async () => {
-    const storage = makeStorage([
-      makeAlert({ id: 'alert-3', targetPrice: 4700, active: true, triggered: true }),
-    ]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'eth-channel-id');
-    expect(mockInteraction.reply).toHaveBeenCalled();
-    const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
-    expect(call.content).toContain('alert-3');
-    expect(call.content).toContain('4,700');
-    expect(call.content).toContain('Triggered');
-  });
-
   it('should list mixed alert statuses', async () => {
     const storage = makeStorage([
       makeAlert({ id: 'a1', targetPrice: 4500, active: true, triggered: false }),
       makeAlert({ id: 'a2', targetPrice: 4600, active: false, triggered: false }),
-      makeAlert({ id: 'a3', targetPrice: 4700, active: true, triggered: true }),
     ]);
     const logger: Logger = {
       info: jest.fn(),
@@ -641,10 +630,9 @@ describe('Alert List Command', () => {
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
     expect(call.content).toContain('a1');
     expect(call.content).toContain('a2');
-    expect(call.content).toContain('a3');
     expect(call.content).toContain('Active');
     expect(call.content).toContain('Inactive');
-    expect(call.content).toContain('Triggered');
+    expect(call.content).not.toContain('Triggered');
   });
 
   it('should default to ETHUSD symbol when no alerts', async () => {
@@ -675,5 +663,138 @@ describe('Alert List Command', () => {
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
     expect(call.content).toContain('SOLUSD Alerts');
+  });
+});
+
+describe('Alert Select Menu', () => {
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  function makeSelectMenu(overrides: {
+    customId?: string;
+    values?: string[];
+    channelId?: string;
+    update?: jest.Mock;
+  }): SelectMenuInteraction {
+    const update = overrides.update ?? jest.fn().mockResolvedValue(undefined);
+    return {
+      customId: overrides.customId ?? 'alert:delete',
+      values: overrides.values ?? ['alert-1'],
+      channelId: overrides.channelId ?? 'eth-channel-id',
+      update,
+    } as unknown as SelectMenuInteraction;
+  }
+
+  describe('alert:delete', () => {
+    it('should delete alert and update message on valid selection', async () => {
+      const storage = makeStorage([
+        makeAlert({ id: 'alert-1', symbol: 'ETHUSD', targetPrice: 4500, active: true, channelId: 'eth-channel-id' }),
+      ]);
+      (storage.getById as jest.Mock).mockReturnValue(
+        makeAlert({ id: 'alert-1', symbol: 'ETHUSD', targetPrice: 4500, active: true, channelId: 'eth-channel-id' }),
+      );
+      const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      const interaction = makeSelectMenu({ customId: 'alert:delete' });
+      await handleSelectMenu(interaction, storage, logger);
+      expect(storage.deleteById).toHaveBeenCalledWith('alert-1');
+      expect(interaction.update).toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('deleted');
+    });
+
+    it('should handle missing alert gracefully', async () => {
+      const storage = makeStorage([]);
+      (storage.getById as jest.Mock).mockReturnValue(undefined);
+      const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      const interaction = makeSelectMenu({ customId: 'alert:delete' });
+      await handleSelectMenu(interaction, storage, logger);
+      expect(storage.deleteById).not.toHaveBeenCalled();
+      expect(interaction.update).toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('not found');
+    });
+  });
+
+  describe('alert:activate', () => {
+    it('should activate inactive alert and update message', async () => {
+      const alert = makeAlert({ id: 'alert-2', symbol: 'ETHUSD', targetPrice: 4600, active: false, channelId: 'eth-channel-id' });
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      const interaction = makeSelectMenu({ customId: 'alert:activate', values: ['alert-2'] });
+      await handleSelectMenu(interaction, storage, logger);
+      expect(storage.update).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
+      expect(interaction.update).toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('activated');
+    });
+  });
+
+  describe('alert:deactivate', () => {
+    it('should deactivate active alert and update message', async () => {
+      const alert = makeAlert({ id: 'alert-3', symbol: 'ETHUSD', targetPrice: 4700, active: true, channelId: 'eth-channel-id' });
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      const interaction = makeSelectMenu({ customId: 'alert:deactivate', values: ['alert-3'] });
+      await handleSelectMenu(interaction, storage, logger);
+      expect(storage.update).toHaveBeenCalledWith(expect.objectContaining({ active: false }));
+      expect(interaction.update).toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('deactivated');
+    });
+  });
+
+  describe('channel ownership validation', () => {
+    it('should reject alert from different channel', async () => {
+      const storage = makeStorage([
+        makeAlert({ id: 'alert-1', symbol: 'ETHUSD', targetPrice: 4500, active: true, channelId: 'other-channel' }),
+      ]);
+      (storage.getById as jest.Mock).mockReturnValue(
+        makeAlert({ id: 'alert-1', symbol: 'ETHUSD', targetPrice: 4500, active: true, channelId: 'other-channel' }),
+      );
+      const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+      const interaction = makeSelectMenu({ customId: 'alert:delete', channelId: 'eth-channel-id' });
+      await handleSelectMenu(interaction, storage, logger);
+      expect(storage.deleteById).not.toHaveBeenCalled();
+      expect(interaction.update).toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('does not belong');
+    });
+  });
+});
+
+describe('Alert Commands - public responses', () => {
+  it('should not use ephemeral responses for /alert set', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, result: { close: 4400 } }),
+    } as unknown as Response);
+    const storage = makeStorage([]);
+    const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const interaction = {
+      reply: jest.fn(),
+      channelId: 'eth-channel-id',
+      options: { getString: jest.fn().mockReturnValue('4500') },
+    } as unknown as ChatInputCommandInteraction;
+    await handleAlertSet(interaction, storage, logger, 'eth-channel-id', 'ETHUSD');
+    expect(interaction.reply).toHaveBeenCalled();
+    const call = (interaction.reply as jest.Mock).mock.calls[0][0];
+    expect(call.ephemeral).toBeUndefined();
+  });
+
+  it('should not use ephemeral responses for /alert list', async () => {
+    const storage = makeStorage([]);
+    const logger: Logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const interaction = {
+      reply: jest.fn(),
+      channelId: 'eth-channel-id',
+      options: {},
+    } as unknown as ChatInputCommandInteraction;
+    await handleAlertList(interaction, storage, logger, 'eth-channel-id');
+    expect(interaction.reply).toHaveBeenCalled();
+    const call = (interaction.reply as jest.Mock).mock.calls[0][0];
+    expect(call.ephemeral).toBeUndefined();
   });
 });
