@@ -144,28 +144,28 @@ describe('REST Baseline Price', () => {
     jest.resetAllMocks();
   });
 
-  it('should fetch baseline price from REST API', async () => {
+  it('should fetch baseline price from REST API with result.close', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ close: 4499.99 }),
+      json: async () => ({ success: true, result: { close: 4500.5 } }),
     } as unknown as Response);
 
     const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
-    const data = (await response.json()) as { close: number };
-    expect(data.close).toBe(4499.99);
-    expect(typeof data.close).toBe('number');
+    const data = (await response.json()) as { success: boolean; result: { close: number } };
+    expect(data.result.close).toBe(4500.5);
+    expect(typeof data.result.close).toBe('number');
   });
 
-  it('should handle string close price from REST', async () => {
+  it('should handle result.close as numeric string', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ close: '4499.99' }),
+      json: async () => ({ success: true, result: { close: '4500.5' } }),
     } as unknown as Response);
 
     const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
-    const data = (await response.json()) as { close: string };
-    const price = typeof data.close === 'number' ? data.close : parseFloat(data.close);
-    expect(price).toBe(4499.99);
+    const data = (await response.json()) as { success: boolean; result: { close: string } };
+    const price = typeof data.result.close === 'number' ? data.result.close : parseFloat(data.result.close);
+    expect(price).toBe(4500.5);
   });
 
   it('should handle REST API failure', async () => {
@@ -176,6 +176,41 @@ describe('REST Baseline Price', () => {
 
     const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
     expect(response.ok).toBe(false);
+  });
+
+  it('should handle missing result object', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    } as unknown as Response);
+
+    const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
+    const data = (await response.json()) as { success: boolean; result?: { close?: unknown } };
+    expect(data.result).toBeUndefined();
+  });
+
+  it('should handle missing close in result', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, result: { symbol: 'ETHUSD' } }),
+    } as unknown as Response);
+
+    const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
+    const data = (await response.json()) as { success: boolean; result: { close?: unknown } };
+    expect(data.result.close).toBeUndefined();
+  });
+
+  it('should handle invalid close value', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, result: { close: 'abc' } }),
+    } as unknown as Response);
+
+    const response = await fetch('https://api.india.delta.exchange/v2/tickers/ETHUSD');
+    const data = (await response.json()) as { success: boolean; result: { close: unknown } };
+    const closeVal = data.result.close;
+    const price = typeof closeVal === 'number' ? closeVal : parseFloat(String(closeVal));
+    expect(Number.isFinite(price)).toBe(false);
   });
 });
 

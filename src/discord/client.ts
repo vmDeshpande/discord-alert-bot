@@ -232,17 +232,23 @@ async function handleAlertSet(
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    const data = (await response.json()) as { close?: unknown };
-    if (typeof data.close === 'number') {
-      baselinePrice = data.close;
-    } else if (typeof data.close === 'string') {
-      baselinePrice = parseFloat(data.close);
+    const data = (await response.json()) as { result?: { close?: unknown } };
+    const closeVal = data.result?.close;
+    if (typeof closeVal === 'number') {
+      baselinePrice = closeVal;
+    } else if (typeof closeVal === 'string') {
+      baselinePrice = parseFloat(closeVal);
     }
   } catch {
     // fall through to error response
   }
 
-  if (baselinePrice === null || baselinePrice === undefined || !Number.isFinite(baselinePrice)) {
+  if (
+    baselinePrice === null ||
+    baselinePrice === undefined ||
+    !Number.isFinite(baselinePrice) ||
+    baselinePrice <= 0
+  ) {
     await interaction.reply({
       content: 'Current price unavailable. Please try again shortly.',
       ephemeral: true,

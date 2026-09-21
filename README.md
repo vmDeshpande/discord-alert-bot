@@ -4,7 +4,7 @@ A simple Discord bot that monitors real-time prices for **ETHUSD** and **SOLUSD*
 
 ## How It Works
 
-- Connects to Delta Exchange's **public** WebSocket (no API key required)
+- Connects to Delta Exchange's **public** WebSocket trades channel (no API key required)
 - Monitors ETHUSD and SOLUSD prices in real time
 - Sends a Discord notification when the price reaches your target
 - Stores alert configurations in SQLite (survives restarts)
@@ -140,10 +140,13 @@ cp .env.example .env
 
 ## Delta Exchange
 
-The bot connects to Delta Exchange's **public** WebSocket feed:
+The bot connects to Delta Exchange's **public** WebSocket trades feed:
 - URL: `wss://public-socket.india.delta.exchange`
 - No API key required
+- Channel: `trades`
 - Monitors: ETHUSD, SOLUSD
+
+Live prices are received from the `trades` WebSocket channel. The initial baseline price for `/alert set` is fetched from the Delta public REST ticker endpoint (`GET https://api.india.delta.exchange/v2/tickers/{symbol}`), reading `result.close` from the response. No API key is required.
 
 ## Database
 
