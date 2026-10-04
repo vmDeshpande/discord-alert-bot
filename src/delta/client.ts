@@ -41,7 +41,7 @@ export interface ParsedTrade {
   timestamp: number;
 }
 
-const SUPPORTED_SYMBOLS = ['ETHUSD', 'SOLUSD'];
+const SUPPORTED_SYMBOLS = ['ETHUSD', 'SOLUSD', 'BTCUSD'];
 
 export function parseDeltaTrade(data: string): ParsedTrade | null {
   let msg: Record<string, unknown>;

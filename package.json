@@ -38,6 +38,11 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/.kilo/",
+      "<rootDir>/dist/"
+    ],
     "transform": {
       "^.+\\.tsx?$": [
         "ts-jest",

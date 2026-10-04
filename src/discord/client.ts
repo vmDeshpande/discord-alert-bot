@@ -19,6 +19,7 @@ import { isValidTargetPrice } from '../alerts/validation';
 
 const ETHUSD_SYMBOL = 'ETHUSD';
 const SOLUSD_SYMBOL = 'SOLUSD';
+const BTCUSD_SYMBOL = 'BTCUSD';
 
 export interface DiscordClient {
   start: (token: string) => Promise<void>;
@@ -32,6 +33,7 @@ export function createDiscordClient(
   storage: AlertStorage,
   ethChannelId: string,
   solChannelId: string,
+  btcChannelId: string,
 ): DiscordClient {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
@@ -41,6 +43,7 @@ export function createDiscordClient(
   const channelToSymbol: Record<string, string> = {
     [ethChannelId]: ETHUSD_SYMBOL,
     [solChannelId]: SOLUSD_SYMBOL,
+    [btcChannelId]: BTCUSD_SYMBOL,
   };
 
   client.once(Events.ClientReady, (): void => {
@@ -191,7 +194,7 @@ async function handleAlertSubCommand(
 
   if (!symbol) {
     await interaction.reply({
-      content: 'Price alerts can only be configured in #ETHUSD or #SOLUSD.',
+      content: 'Price alerts can only be configured in #ETHUSD, #SOLUSD or #BTCUSD.',
     });
     return;
   }
@@ -210,7 +213,7 @@ async function handleAlertSubCommand(
       await handleAlertDeactivate(interaction, storage, logger, channelId);
       break;
     case 'list':
-      await handleAlertList(interaction, storage, logger, channelId);
+      await handleAlertList(interaction, storage, logger, channelId, symbol);
       break;
     default:
       await interaction.reply({ content: 'Unknown subcommand.' });
@@ -348,9 +351,10 @@ export async function handleAlertList(
   storage: AlertStorage,
   logger: Logger,
   channelId: string | null,
+  channelSymbol: string,
 ): Promise<void> {
   const alerts = storage.getAllByChannel(channelId ?? '');
-  const symbol = alerts.length > 0 ? alerts[0].symbol : 'ETHUSD';
+  const symbol = alerts.length > 0 ? alerts[0].symbol : channelSymbol;
 
   if (alerts.length === 0) {
     await interaction.reply({

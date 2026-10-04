@@ -1,11 +1,11 @@
 # Discord Alert Bot
 
-A simple Discord bot that monitors real-time prices for **ETHUSD** and **SOLUSD** on Delta Exchange (India) and sends price alerts to dedicated Discord channels.
+A simple Discord bot that monitors real-time prices for **ETHUSD**, **SOLUSD** and **BTCUSD** on Delta Exchange (India) and sends price alerts to dedicated Discord channels.
 
 ## How It Works
 
 - Connects to Delta Exchange's **public** WebSocket trades channel (no API key required)
-- Monitors ETHUSD and SOLUSD prices in real time
+- Monitors ETHUSD, SOLUSD and BTCUSD prices in real time
 - Sends a Discord notification when the price reaches your target
 - Stores alert configurations in SQLite (survives restarts)
 
@@ -15,6 +15,7 @@ A simple Discord bot that monitors real-time prices for **ETHUSD** and **SOLUSD*
 |-----------------|--------|
 | #ETHUSD         | ETHUSD |
 | #SOLUSD         | SOLUSD |
+| #BTCUSD         | BTCUSD |
 
 Each channel has independent price alerts. Multiple alerts per channel are supported.
 
@@ -46,27 +47,26 @@ Example:
 ```
 🔔 ETHUSD Alerts
 
-#abc123  $4,500  🟢 Active
-#def456  $4,600  🟢 Active
-#ghi789  $4,700  🔕 Inactive
-#jkl012  $4,800  ✅ Triggered
+$4,500  🟢 Active
+$4,600  🟢 Active
+$4,700  🔕 Inactive
 ```
 
-### /alert activate id:<id>
+### /alert activate
 
-Activate a specific alert by ID. Only alerts in the current channel can be activated.
+Activate an alert. Shows a selectable menu of inactive alerts in this channel.
 
-### /alert deactivate id:<id>
+### /alert deactivate
 
-Deactivate a specific alert by ID. Only alerts in the current channel can be deactivated. The alert is not deleted.
+Deactivate an alert. Shows a selectable menu of active alerts in this channel. The alert is not deleted.
 
-### /alert delete id:<id>
+### /alert delete
 
-Permanently delete a specific alert by ID. Only alerts in the current channel can be deleted.
+Permanently delete an alert. Shows a selectable menu of all alerts in this channel.
 
 ### /alert set requirements
 
-- Only works in #ETHUSD or #SOLUSD
+- Only works in #ETHUSD, #SOLUSD or #BTCUSD
 - Requires Delta price feed to be available
 - If price is unavailable: "Current price unavailable. Please try again shortly."
 
@@ -79,8 +79,8 @@ Permanently delete a specific alert by ID. Only alerts in the current channel ca
    - Target = baseline → triggers immediately
 3. The bot monitors future price updates
 4. Alert triggers when price crosses the target in the set direction
-5. A single Discord message is sent, and the alert is marked as triggered
-6. The alert will never fire again
+5. A single Discord message is sent, and the alert is deleted from the database
+6. The alert will never fire again (if Discord delivery fails, the alert stays active and retries)
 
 ### Examples
 
@@ -137,6 +137,7 @@ cp .env.example .env
 | `DELTA_WS_URL` | Delta WebSocket URL | `wss://public-socket.india.delta.exchange` |
 | `ETHUSD_CHANNEL_ID` | Discord channel ID for ETHUSD | *(required)* |
 | `SOLUSD_CHANNEL_ID` | Discord channel ID for SOLUSD | *(required)* |
+| `BTCUSD_CHANNEL_ID` | Discord channel ID for BTCUSD | *(required)* |
 
 ## Delta Exchange
 
@@ -144,7 +145,7 @@ The bot connects to Delta Exchange's **public** WebSocket trades feed:
 - URL: `wss://public-socket.india.delta.exchange`
 - No API key required
 - Channel: `trades`
-- Monitors: ETHUSD, SOLUSD
+- Monitors: ETHUSD, SOLUSD, BTCUSD
 
 Live prices are received from the `trades` WebSocket channel. The initial baseline price for `/alert set` is fetched from the Delta public REST ticker endpoint (`GET https://api.india.delta.exchange/v2/tickers/{symbol}`), reading `result.close` from the response. No API key is required.
 
@@ -152,7 +153,7 @@ Live prices are received from the `trades` WebSocket channel. The initial baseli
 
 Alerts are stored in SQLite. Schema:
 - `id` - Unique alert ID
-- `symbol` - Trading pair (ETHUSD or SOLUSD)
+- `symbol` - Trading pair (ETHUSD, SOLUSD or BTCUSD)
 - `channel_id` - Discord channel ID
 - `target_price` - Target price to trigger at
 - `baseline_price` - Price when alert was created
@@ -204,7 +205,7 @@ npm run build
 - Use `/alert set` - if price is unavailable, try again shortly
 
 ### Alert creation fails
-- Ensure you're in #ETHUSD or #SOLUSD channel
+- Ensure you're in #ETHUSD, #SOLUSD or #BTCUSD channel
 - Ensure Delta WebSocket is connected
 - Verify price is a positive number
 
@@ -213,5 +214,5 @@ npm run build
 - No web dashboard (by design)
 - No user authentication (by design)
 - Uses Delta public market data only (no trading)
-- Requires ETHUSD_CHANNEL_ID and SOLUSD_CHANNEL_ID environment variables
+- Requires ETHUSD_CHANNEL_ID, SOLUSD_CHANNEL_ID and BTCUSD_CHANNEL_ID environment variables
 - No edit command - delete and recreate to change a target price

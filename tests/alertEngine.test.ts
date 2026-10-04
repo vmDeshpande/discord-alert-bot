@@ -14,6 +14,7 @@ import {
   handleSelectMenu,
 } from '../src/discord/client';
 import { ChatInputCommandInteraction, SelectMenuInteraction } from 'discord.js';
+import { loadConfig } from '../src/config';
 
 const logger: Logger = {
   info: jest.fn(),
@@ -111,6 +112,60 @@ describe('Delta Trade Parser', () => {
     });
   });
 
+  describe('BTCUSD support', () => {
+    it('should parse BTCUSD trade', () => {
+      const payload = JSON.stringify({
+        type: 'trades',
+        p: '95000.25',
+        sy: 'BTCUSD',
+        t: 1234567890,
+        ts: 1234567891,
+      });
+      const result = parseDeltaTrade(payload);
+      expect(result).not.toBeNull();
+      expect(result!.symbol).toBe('BTCUSD');
+      expect(result!.price).toBe(95000.25);
+    });
+
+    it('should parse BTCUSD trade with integer price', () => {
+      const payload = JSON.stringify({
+        type: 'trades',
+        p: '100000',
+        sy: 'BTCUSD',
+        t: 1,
+        ts: 2,
+      });
+      const result = parseDeltaTrade(payload);
+      expect(result).not.toBeNull();
+      expect(result!.symbol).toBe('BTCUSD');
+      expect(result!.price).toBe(100000);
+    });
+
+    it('should parse BTCUSD Buffer WebSocket message', () => {
+      const raw = JSON.stringify({
+        type: 'trades',
+        p: '95000.25',
+        sy: 'BTCUSD',
+        t: 1234567890,
+        ts: 1234567891,
+      });
+      const result = parseDeltaTrade(Buffer.from(raw, 'utf-8').toString('utf-8'));
+      expect(result).not.toBeNull();
+      expect(result!.symbol).toBe('BTCUSD');
+      expect(result!.price).toBe(95000.25);
+    });
+
+    it('should reject BTCUSD with invalid price', () => {
+      expect(
+        parseDeltaTrade(JSON.stringify({ type: 'trades', sy: 'BTCUSD', p: 'abc' })),
+      ).toBeNull();
+    });
+
+    it('should reject BTCUSD with missing price', () => {
+      expect(parseDeltaTrade(JSON.stringify({ type: 'trades', sy: 'BTCUSD' }))).toBeNull();
+    });
+  });
+
   describe('Invalid trade payloads', () => {
     it('should return null for invalid JSON', () => {
       expect(parseDeltaTrade('not json')).toBeNull();
@@ -140,7 +195,7 @@ describe('Delta Trade Parser', () => {
   describe('Unsupported symbols', () => {
     it('should reject unsupported symbol', () => {
       const result = parseDeltaTrade(
-        JSON.stringify({ type: 'trades', p: '100', sy: 'BTCUSD', t: 1, ts: 2 }),
+        JSON.stringify({ type: 'trades', p: '100', sy: 'XRPUSD', t: 1, ts: 2 }),
       );
       expect(result).toBeNull();
     });
@@ -233,6 +288,12 @@ describe('Channel-Symbol Mapping', () => {
     const alert = makeAlert({ symbol: 'SOLUSD', channelId: 'sol-channel-id' });
     expect(alert.symbol).toBe('SOLUSD');
     expect(alert.channelId).toBe('sol-channel-id');
+  });
+
+  it('should map #BTCUSD channel to BTCUSD symbol', () => {
+    const alert = makeAlert({ symbol: 'BTCUSD', channelId: 'btc-channel-id' });
+    expect(alert.symbol).toBe('BTCUSD');
+    expect(alert.channelId).toBe('btc-channel-id');
   });
 });
 
@@ -560,19 +621,20 @@ describe('Alert List Command', () => {
     options: { getString: jest.fn() },
   } as unknown as ChatInputCommandInteraction;
 
+  const quietLogger: Logger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  };
+
   beforeEach(() => {
     jest.resetAllMocks();
   });
 
   it('should reply with no alerts message for empty channel', async () => {
     const storage = makeStorage([]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'eth-channel-id');
+    await handleAlertList(mockInteraction, storage, quietLogger, 'eth-channel-id', 'ETHUSD');
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
     expect(call.content).toContain('No alerts configured');
@@ -582,16 +644,9 @@ describe('Alert List Command', () => {
     const storage = makeStorage([
       makeAlert({ id: 'alert-1', targetPrice: 4500, active: true, triggered: false }),
     ]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'eth-channel-id');
+    await handleAlertList(mockInteraction, storage, quietLogger, 'eth-channel-id', 'ETHUSD');
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
-    expect(call.content).toContain('alert-1');
     expect(call.content).toContain('4,500');
     expect(call.content).toContain('Active');
   });
@@ -600,16 +655,9 @@ describe('Alert List Command', () => {
     const storage = makeStorage([
       makeAlert({ id: 'alert-2', targetPrice: 4600, active: false, triggered: false }),
     ]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'eth-channel-id');
+    await handleAlertList(mockInteraction, storage, quietLogger, 'eth-channel-id', 'ETHUSD');
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
-    expect(call.content).toContain('alert-2');
     expect(call.content).toContain('4,600');
     expect(call.content).toContain('Inactive');
   });
@@ -619,31 +667,19 @@ describe('Alert List Command', () => {
       makeAlert({ id: 'a1', targetPrice: 4500, active: true, triggered: false }),
       makeAlert({ id: 'a2', targetPrice: 4600, active: false, triggered: false }),
     ]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'eth-channel-id');
+    await handleAlertList(mockInteraction, storage, quietLogger, 'eth-channel-id', 'ETHUSD');
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
-    expect(call.content).toContain('a1');
-    expect(call.content).toContain('a2');
+    expect(call.content).toContain('4,500');
+    expect(call.content).toContain('4,600');
     expect(call.content).toContain('Active');
     expect(call.content).toContain('Inactive');
     expect(call.content).not.toContain('Triggered');
   });
 
-  it('should default to ETHUSD symbol when no alerts', async () => {
+  it('should default to the channel symbol when no alerts', async () => {
     const storage = makeStorage([]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'eth-channel-id');
+    await handleAlertList(mockInteraction, storage, quietLogger, 'eth-channel-id', 'ETHUSD');
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
     expect(call.content).toContain('ETHUSD Alerts');
@@ -653,16 +689,19 @@ describe('Alert List Command', () => {
     const storage = makeStorage([
       makeAlert({ id: 'a1', symbol: 'SOLUSD', targetPrice: 100, active: true, triggered: false }),
     ]);
-    const logger: Logger = {
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
-      debug: jest.fn(),
-    };
-    await handleAlertList(mockInteraction, storage, logger, 'sol-channel-id');
+    await handleAlertList(mockInteraction, storage, quietLogger, 'sol-channel-id', 'SOLUSD');
     expect(mockInteraction.reply).toHaveBeenCalled();
     const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
     expect(call.content).toContain('SOLUSD Alerts');
+  });
+
+  it('should use BTCUSD channel symbol for empty BTC channel', async () => {
+    const storage = makeStorage([]);
+    await handleAlertList(mockInteraction, storage, quietLogger, 'btc-channel-id', 'BTCUSD');
+    expect(mockInteraction.reply).toHaveBeenCalled();
+    const call = (mockInteraction.reply as jest.Mock).mock.calls[0][0];
+    expect(call.content).toContain('BTCUSD Alerts');
+    expect(call.content).toContain('No alerts configured');
   });
 });
 
@@ -792,9 +831,470 @@ describe('Alert Commands - public responses', () => {
       channelId: 'eth-channel-id',
       options: {},
     } as unknown as ChatInputCommandInteraction;
-    await handleAlertList(interaction, storage, logger, 'eth-channel-id');
+    await handleAlertList(interaction, storage, logger, 'eth-channel-id', 'ETHUSD');
     expect(interaction.reply).toHaveBeenCalled();
     const call = (interaction.reply as jest.Mock).mock.calls[0][0];
     expect(call.ephemeral).toBeUndefined();
+  });
+});
+
+describe('BTCUSD - alert lifecycle', () => {
+  const btcAlert = (overrides: Partial<AlertConfig> = {}): AlertConfig =>
+    makeAlert({
+      id: 'btc-1',
+      symbol: 'BTCUSD',
+      channelId: 'btc-channel-id',
+      ...overrides,
+    });
+
+  const makeDiscord = (sent: boolean) => ({
+    start: jest.fn(),
+    stop: jest.fn(),
+    isReady: jest.fn().mockReturnValue(true),
+    sendAlert: jest.fn().mockResolvedValue(sent),
+  });
+
+  const makeSelectMenu = (customId: string, values: string[], channelId = 'btc-channel-id') =>
+    ({
+      customId,
+      values,
+      channelId,
+      update: jest.fn().mockResolvedValue(undefined),
+    }) as unknown as SelectMenuInteraction;
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+  });
+
+  describe('baseline price retrieval', () => {
+    it('should fetch BTCUSD baseline from result.close', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, result: { symbol: 'BTCUSD', close: 95000 } }),
+      } as unknown as Response);
+
+      const storage = makeStorage([]);
+      const interaction = {
+        reply: jest.fn(),
+        channelId: 'btc-channel-id',
+        options: { getString: jest.fn().mockReturnValue('96000') },
+      } as unknown as ChatInputCommandInteraction;
+
+      await handleAlertSet(interaction, storage, logger, 'btc-channel-id', 'BTCUSD');
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://api.india.delta.exchange/v2/tickers/BTCUSD',
+      );
+      const saved = (storage.save as jest.Mock).mock.calls[0][0] as AlertConfig;
+      expect(saved.symbol).toBe('BTCUSD');
+      expect(saved.channelId).toBe('btc-channel-id');
+      expect(saved.baselinePrice).toBe(95000);
+      expect(saved.targetPrice).toBe(96000);
+      expect(saved.direction).toBe('upward');
+    });
+
+    it('should create downward BTCUSD alert when target is below baseline', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ success: true, result: { close: 95000 } }),
+      } as unknown as Response);
+
+      const storage = makeStorage([]);
+      const interaction = {
+        reply: jest.fn(),
+        channelId: 'btc-channel-id',
+        options: { getString: jest.fn().mockReturnValue('90000') },
+      } as unknown as ChatInputCommandInteraction;
+
+      await handleAlertSet(interaction, storage, logger, 'btc-channel-id', 'BTCUSD');
+
+      const saved = (storage.save as jest.Mock).mock.calls[0][0] as AlertConfig;
+      expect(saved.direction).toBe('downward');
+      expect(saved.baselinePrice).toBe(95000);
+      expect(saved.targetPrice).toBe(90000);
+      expect(saved.active).toBe(true);
+      expect(saved.triggered).toBe(false);
+    });
+
+    it('should not create BTCUSD alert when baseline is unavailable', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+      } as unknown as Response);
+
+      const storage = makeStorage([]);
+      const interaction = {
+        reply: jest.fn(),
+        channelId: 'btc-channel-id',
+        options: { getString: jest.fn().mockReturnValue('96000') },
+      } as unknown as ChatInputCommandInteraction;
+
+      await handleAlertSet(interaction, storage, logger, 'btc-channel-id', 'BTCUSD');
+
+      expect(storage.save).not.toHaveBeenCalled();
+      const call = (interaction.reply as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('Current price unavailable');
+    });
+  });
+
+  describe('triggering', () => {
+    it('should trigger upward BTCUSD alert and delete it after successful delivery', async () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 96000, direction: 'upward' });
+      const storage = makeStorage([alert]);
+      const discord = makeDiscord(true);
+      const engine = createAlertEngine(storage, discord, logger);
+
+      engine.onPriceUpdate({
+        symbol: 'BTCUSD',
+        currentPrice: 96100,
+        previousPrice: 95000,
+        timestamp: Date.now(),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(discord.sendAlert).toHaveBeenCalledTimes(1);
+      expect(discord.sendAlert).toHaveBeenCalledWith('btc-channel-id', expect.any(String));
+      expect(storage.deleteById).toHaveBeenCalledWith('btc-1');
+      expect(storage.update).not.toHaveBeenCalled();
+    });
+
+    it('should trigger downward BTCUSD alert and delete it after successful delivery', async () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 90000, direction: 'downward' });
+      const storage = makeStorage([alert]);
+      const discord = makeDiscord(true);
+      const engine = createAlertEngine(storage, discord, logger);
+
+      engine.onPriceUpdate({
+        symbol: 'BTCUSD',
+        currentPrice: 89900,
+        previousPrice: 95000,
+        timestamp: Date.now(),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(discord.sendAlert).toHaveBeenCalledWith('btc-channel-id', expect.any(String));
+      expect(storage.deleteById).toHaveBeenCalledWith('btc-1');
+    });
+
+    it('should NOT trigger BTCUSD alert when price stays below target', async () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 96000, direction: 'upward' });
+      const storage = makeStorage([alert]);
+      const discord = makeDiscord(true);
+      const engine = createAlertEngine(storage, discord, logger);
+
+      engine.onPriceUpdate({
+        symbol: 'BTCUSD',
+        currentPrice: 95500,
+        previousPrice: 95000,
+        timestamp: Date.now(),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(discord.sendAlert).not.toHaveBeenCalled();
+      expect(storage.deleteById).not.toHaveBeenCalled();
+    });
+
+    it('should retain BTCUSD alert when Discord delivery fails', async () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 96000, direction: 'upward' });
+      const storage = makeStorage([alert]);
+      const discord = makeDiscord(false);
+      const engine = createAlertEngine(storage, discord, logger);
+
+      engine.onPriceUpdate({
+        symbol: 'BTCUSD',
+        currentPrice: 96100,
+        previousPrice: 95000,
+        timestamp: Date.now(),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(discord.sendAlert).toHaveBeenCalledTimes(1);
+      expect(storage.deleteById).not.toHaveBeenCalled();
+      expect(alert.triggered).toBe(false);
+      expect(alert.active).toBe(true);
+    });
+
+    it('should send duplicate suppression for BTCUSD alerts', async () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 96000, direction: 'upward' });
+      const storage = makeStorage([alert]);
+      const discord = makeDiscord(true);
+      const engine = createAlertEngine(storage, discord, logger);
+
+      const payload = {
+        symbol: 'BTCUSD',
+        currentPrice: 96100,
+        previousPrice: 95000,
+        timestamp: Date.now(),
+      };
+      engine.onPriceUpdate(payload);
+      engine.onPriceUpdate(payload);
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(discord.sendAlert).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not trigger BTCUSD alerts on ETHUSD price updates', async () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 96000, direction: 'upward' });
+      const storage = makeStorage([alert]);
+      (storage.getActiveBySymbol as jest.Mock).mockReturnValue([]);
+      const discord = makeDiscord(true);
+      const engine = createAlertEngine(storage, discord, logger);
+
+      engine.onPriceUpdate({
+        symbol: 'ETHUSD',
+        currentPrice: 99999,
+        previousPrice: 4400,
+        timestamp: Date.now(),
+      });
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+
+      expect(storage.getActiveBySymbol).toHaveBeenCalledWith('ETHUSD');
+      expect(discord.sendAlert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('evaluateAlert with BTCUSD', () => {
+    it('should trigger upward when price is at or above target', () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 96000, direction: 'upward' });
+      expect(evaluateAlert(alert, { symbol: 'BTCUSD', price: 96000, timestamp: 1 }).triggered).toBe(
+        true,
+      );
+    });
+
+    it('should trigger downward when price is at or below target', () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 90000, direction: 'downward' });
+      expect(evaluateAlert(alert, { symbol: 'BTCUSD', price: 90000, timestamp: 1 }).triggered).toBe(
+        true,
+      );
+    });
+
+    it('should trigger immediately when target equals baseline', () => {
+      const alert = btcAlert({ baselinePrice: 95000, targetPrice: 95000, direction: 'upward' });
+      expect(evaluateAlert(alert, { symbol: 'BTCUSD', price: 95000, timestamp: 1 }).triggered).toBe(
+        true,
+      );
+    });
+  });
+
+  describe('select menu flows', () => {
+    it('should delete a BTCUSD alert via select menu', async () => {
+      const alert = btcAlert();
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const interaction = makeSelectMenu('alert:delete', ['btc-1']);
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.deleteById).toHaveBeenCalledWith('btc-1');
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('BTCUSD');
+      expect(call.content).toContain('deleted');
+    });
+
+    it('should activate an inactive BTCUSD alert via select menu', async () => {
+      const alert = btcAlert({ active: false });
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const interaction = makeSelectMenu('alert:activate', ['btc-1']);
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.update).toHaveBeenCalledWith(expect.objectContaining({ active: true }));
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('activated');
+    });
+
+    it('should deactivate an active BTCUSD alert via select menu', async () => {
+      const alert = btcAlert({ active: true });
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const interaction = makeSelectMenu('alert:deactivate', ['btc-1']);
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.update).toHaveBeenCalledWith(expect.objectContaining({ active: false }));
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('deactivated');
+    });
+
+    it('should list BTCUSD alerts for the BTC channel', async () => {
+      const storage = makeStorage([
+        btcAlert({ id: 'btc-1', targetPrice: 96000, active: true }),
+        btcAlert({ id: 'btc-2', targetPrice: 90000, active: false }),
+      ]);
+      const interaction = {
+        reply: jest.fn(),
+        channelId: 'btc-channel-id',
+        options: {},
+      } as unknown as ChatInputCommandInteraction;
+
+      await handleAlertList(interaction, storage, logger, 'btc-channel-id', 'BTCUSD');
+
+      const call = (interaction.reply as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('BTCUSD Alerts');
+      expect(call.content).toContain('96,000');
+      expect(call.content).toContain('Active');
+      expect(call.content).toContain('90,000');
+      expect(call.content).toContain('Inactive');
+      expect(call.ephemeral).toBeUndefined();
+    });
+  });
+
+  describe('channel isolation', () => {
+    it('should not delete a BTCUSD alert from the ETH channel', async () => {
+      const alert = btcAlert();
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const interaction = makeSelectMenu('alert:delete', ['btc-1'], 'eth-channel-id');
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.deleteById).not.toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('does not belong');
+    });
+
+    it('should not activate a BTCUSD alert from the SOL channel', async () => {
+      const alert = btcAlert({ active: false });
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const interaction = makeSelectMenu('alert:activate', ['btc-1'], 'sol-channel-id');
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.update).not.toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('does not belong');
+    });
+
+    it('should not deactivate a BTCUSD alert from the ETH channel', async () => {
+      const alert = btcAlert({ active: true });
+      const storage = makeStorage([alert]);
+      (storage.getById as jest.Mock).mockReturnValue(alert);
+      const interaction = makeSelectMenu('alert:deactivate', ['btc-1'], 'eth-channel-id');
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.update).not.toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('does not belong');
+    });
+
+    it('should scope BTCUSD list queries to the BTC channel', async () => {
+      const storage = makeStorage([]);
+      const interaction = {
+        reply: jest.fn(),
+        channelId: 'btc-channel-id',
+        options: {},
+      } as unknown as ChatInputCommandInteraction;
+
+      await handleAlertList(interaction, storage, logger, 'btc-channel-id', 'BTCUSD');
+
+      expect(storage.getAllByChannel).toHaveBeenCalledWith('btc-channel-id');
+    });
+
+    it('should report alert not found when BTCUSD alert was already deleted', async () => {
+      const storage = makeStorage([]);
+      (storage.getById as jest.Mock).mockReturnValue(undefined);
+      const interaction = makeSelectMenu('alert:delete', ['btc-1']);
+
+      await handleSelectMenu(interaction, storage, logger);
+
+      expect(storage.deleteById).not.toHaveBeenCalled();
+      const call = (interaction.update as jest.Mock).mock.calls[0][0];
+      expect(call.content).toContain('not found');
+    });
+  });
+});
+
+describe('Configuration validation', () => {
+  const quietLogger: Logger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+    debug: jest.fn(),
+  };
+
+  const originalEnv = { ...process.env };
+
+  const setChannelIds = (eth: string, sol: string, btc: string): void => {
+    process.env.ETHUSD_CHANNEL_ID = eth;
+    process.env.SOLUSD_CHANNEL_ID = sol;
+    process.env.BTCUSD_CHANNEL_ID = btc;
+  };
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, DISCORD_BOT_TOKEN: 'test-token' };
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('should load config when all three channel IDs are present and unique', () => {
+    setChannelIds('111', '222', '333');
+    const config = loadConfig(quietLogger);
+    expect(config.ethChannelId).toBe('111');
+    expect(config.solChannelId).toBe('222');
+    expect(config.btcChannelId).toBe('333');
+    expect(config.deltaSymbols).toEqual(['ETHUSD', 'SOLUSD', 'BTCUSD']);
+  });
+
+  it('should throw and name the missing variable', () => {
+    setChannelIds('111', '222', '');
+    expect(() => loadConfig(quietLogger)).toThrow(/BTCUSD_CHANNEL_ID/);
+  });
+
+  it('should name every missing variable', () => {
+    process.env.ETHUSD_CHANNEL_ID = '';
+    process.env.SOLUSD_CHANNEL_ID = '';
+    process.env.BTCUSD_CHANNEL_ID = '';
+    let message = '';
+    try {
+      loadConfig(quietLogger);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('ETHUSD_CHANNEL_ID');
+    expect(message).toContain('SOLUSD_CHANNEL_ID');
+    expect(message).toContain('BTCUSD_CHANNEL_ID');
+  });
+
+  it('should treat a whitespace-only channel ID as missing', () => {
+    setChannelIds('111', '   ', '333');
+    expect(() => loadConfig(quietLogger)).toThrow(/SOLUSD_CHANNEL_ID/);
+  });
+
+  it('should throw when ETHUSD and SOLUSD share a channel ID', () => {
+    setChannelIds('111', '111', '333');
+    expect(() => loadConfig(quietLogger)).toThrow(/ETHUSD_CHANNEL_ID and SOLUSD_CHANNEL_ID/);
+  });
+
+  it('should throw when SOLUSD and BTCUSD share a channel ID', () => {
+    setChannelIds('111', '222', '222');
+    expect(() => loadConfig(quietLogger)).toThrow(/SOLUSD_CHANNEL_ID and BTCUSD_CHANNEL_ID/);
+  });
+
+  it('should throw and name all variables when all three share a channel ID', () => {
+    setChannelIds('111', '111', '111');
+    let message = '';
+    try {
+      loadConfig(quietLogger);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('ETHUSD_CHANNEL_ID, SOLUSD_CHANNEL_ID and BTCUSD_CHANNEL_ID');
+  });
+
+  it('should report missing rather than duplicate when two IDs are empty', () => {
+    setChannelIds('', '', '333');
+    let message = '';
+    try {
+      loadConfig(quietLogger);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain('Missing required channel configuration');
+    expect(message).not.toContain('Duplicate channel configuration');
   });
 });
