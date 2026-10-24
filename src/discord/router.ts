@@ -10,7 +10,12 @@ import { AlertStorage } from '../database/storage';
 import { TradeStorage } from '../database/tradeStorage';
 import { LevelStorage } from '../database/levelStorage';
 import { TradeInteractionStorage } from '../database/tradeInteractionStorage';
-import { handleCommandExported, handleSelectMenu, handleLevelCommand } from './client';
+import {
+  handleCommandExported,
+  handleSelectMenu,
+  handleLevelCommand,
+  createAndActivateLevel,
+} from './client';
 import { parseTradeCustomId } from './interactions';
 import {
   buildTradeManageEmbed,
@@ -132,6 +137,45 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           return;
         }
         await menu.reply({ content: 'Unknown action.' }).catch(() => {});
+        return;
+      }
+      if (customId.startsWith('level:set:select:')) {
+        const parts = customId.split(':');
+        // level:set:select:{price}:{condition}
+        const priceStr = parts[3];
+        const condition = parts[4];
+        const selectedTradeId = menu.values[0];
+
+        const trade = deps.tradeStorage?.getById(selectedTradeId);
+        if (!trade) {
+          await menu.reply({ content: 'Trade not found.' }).catch(() => {});
+          return;
+        }
+        if (trade.monitoringStatus === 'closed') {
+          await menu.reply({ content: 'Trade is closed.' }).catch(() => {});
+          return;
+        }
+        if (trade.stopLossStatus !== 'verified') {
+          await menu
+            .reply({
+              content: 'Stop must be verified before adding levels.',
+              ephemeral: true,
+            })
+            .catch(() => {});
+          return;
+        }
+
+        const price = parseFloat(priceStr);
+        if (!isFinitePositive(price)) {
+          await menu.reply({ content: 'Invalid price.' }).catch(() => {});
+          return;
+        }
+        if (condition !== 'BUY' && condition !== 'SELL') {
+          await menu.reply({ content: 'Condition must be BUY or SELL.' }).catch(() => {});
+          return;
+        }
+
+        await createAndActivateLevel(menu, trade, price, condition, deps.levelStorage, logger);
         return;
       }
       return;

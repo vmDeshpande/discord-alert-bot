@@ -100,6 +100,43 @@ async function main(): Promise<void> {
       const dc: any = discordClient as any;
       const client = dc.getClient ? dc.getClient() : dc.client;
 
+      const discordAdapter = {
+        sendMessage: async (channelId: string, _content?: string, embed?: unknown) => {
+          try {
+            const channel = await client.channels.fetch(channelId);
+            if (channel && 'send' in channel) {
+              const msg = await (channel as any).send({ embeds: embed ? [embed] : [] });
+              return { id: msg.id };
+            }
+            return null;
+          } catch (err) {
+            logger.error('Discord send failed', { error: String(err), channelId });
+            return null;
+          }
+        },
+        editMessage: async (
+          channelId: string,
+          messageId: string,
+          _content?: string,
+          embed?: unknown,
+        ) => {
+          try {
+            const channel = await client.channels.fetch(channelId);
+            if (channel && 'messages' in channel) {
+              const msg = await (channel as any).messages.fetch(messageId);
+              if (msg && msg.edit) {
+                await msg.edit({ embeds: embed ? [embed] : [] });
+                return true;
+              }
+            }
+            return false;
+          } catch (err) {
+            logger.error('Discord edit failed', { error: String(err), channelId, messageId });
+            return false;
+          }
+        },
+      };
+
       try {
         const authClient = createAuthenticatedDeltaClient(
           {
@@ -158,47 +195,15 @@ async function main(): Promise<void> {
           } as any,
           logger,
           config.tradeManagement.demoMode || !closeEnabled,
+          {
+            channelId: config.tradeManagement.discordChannelId,
+            sendMessage: discordAdapter.sendMessage,
+          },
         );
       } catch (err) {
         logger.error('Failed to start trade services', { error: String(err) });
       }
 
-      const discordAdapter = {
-        sendMessage: async (channelId: string, _content?: string, embed?: unknown) => {
-          try {
-            const channel = await client.channels.fetch(channelId);
-            if (channel && 'send' in channel) {
-              const msg = await (channel as any).send({ embeds: embed ? [embed] : [] });
-              return { id: msg.id };
-            }
-            return null;
-          } catch (err) {
-            logger.error('Dashboard send failed', { error: String(err), channelId });
-            return null;
-          }
-        },
-        editMessage: async (
-          channelId: string,
-          messageId: string,
-          _content?: string,
-          embed?: unknown,
-        ) => {
-          try {
-            const channel = await client.channels.fetch(channelId);
-            if (channel && 'messages' in channel) {
-              const msg = await (channel as any).messages.fetch(messageId);
-              if (msg && msg.edit) {
-                await msg.edit({ embeds: embed ? [embed] : [] });
-                return true;
-              }
-            }
-            return false;
-          } catch (err) {
-            logger.error('Dashboard edit failed', { error: String(err), channelId, messageId });
-            return false;
-          }
-        },
-      };
       if (dashboardService) {
         dashboardService.stop();
       }

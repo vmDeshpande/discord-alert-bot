@@ -116,4 +116,111 @@ describe('Discord Router', () => {
     });
     expect(interaction.reply).toHaveBeenCalled();
   });
+
+  it('creates and activates a level from the level set select menu', async () => {
+    const interaction = makeInteraction('select', 'level:set:select:45000:BUY');
+    interaction.values = ['t1'];
+    const tradeStorage = {
+      getById: jest.fn().mockReturnValue({
+        id: 't1',
+        symbol: 'BTCUSD',
+        side: 'BUY',
+        monitoringStatus: 'active',
+        stopLossStatus: 'verified',
+      }),
+    };
+    const levelStorage = { upsert: jest.fn() };
+    await routeInteraction(interaction, {
+      logger,
+      storage,
+      channelToSymbol: {},
+      tradeStorage: tradeStorage as any,
+      levelStorage: levelStorage as any,
+    });
+    expect(levelStorage.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'active',
+        monitoringState: 'monitoring',
+        tradeId: 't1',
+        levelPrice: 45000,
+        condition: 'BUY',
+      }),
+    );
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: expect.stringContaining('monitoring active') }),
+    );
+  });
+
+  it('rejects level set select menu for closed trade', async () => {
+    const interaction = makeInteraction('select', 'level:set:select:45000:BUY');
+    interaction.values = ['t1'];
+    const tradeStorage = {
+      getById: jest.fn().mockReturnValue({
+        id: 't1',
+        symbol: 'BTCUSD',
+        side: 'BUY',
+        monitoringStatus: 'closed',
+        stopLossStatus: 'verified',
+      }),
+    };
+    const levelStorage = { upsert: jest.fn() };
+    await routeInteraction(interaction, {
+      logger,
+      storage,
+      channelToSymbol: {},
+      tradeStorage: tradeStorage as any,
+      levelStorage: levelStorage as any,
+    });
+    expect(levelStorage.upsert).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Trade is closed.' }),
+    );
+  });
+
+  it('rejects level set select menu when trade not found', async () => {
+    const interaction = makeInteraction('select', 'level:set:select:45000:BUY');
+    interaction.values = ['missing'];
+    const tradeStorage = { getById: jest.fn().mockReturnValue(undefined) };
+    const levelStorage = { upsert: jest.fn() };
+    await routeInteraction(interaction, {
+      logger,
+      storage,
+      channelToSymbol: {},
+      tradeStorage: tradeStorage as any,
+      levelStorage: levelStorage as any,
+    });
+    expect(levelStorage.upsert).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Trade not found.' }),
+    );
+  });
+
+  it('rejects level set select menu when stop not verified', async () => {
+    const interaction = makeInteraction('select', 'level:set:select:45000:BUY');
+    interaction.values = ['t1'];
+    const tradeStorage = {
+      getById: jest.fn().mockReturnValue({
+        id: 't1',
+        symbol: 'BTCUSD',
+        side: 'BUY',
+        monitoringStatus: 'active',
+        stopLossStatus: 'pending',
+      }),
+    };
+    const levelStorage = { upsert: jest.fn() };
+    await routeInteraction(interaction, {
+      logger,
+      storage,
+      channelToSymbol: {},
+      tradeStorage: tradeStorage as any,
+      levelStorage: levelStorage as any,
+    });
+    expect(levelStorage.upsert).not.toHaveBeenCalled();
+    expect(interaction.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: 'Stop must be verified before adding levels.',
+        ephemeral: true,
+      }),
+    );
+  });
 });

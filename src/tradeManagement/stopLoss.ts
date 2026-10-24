@@ -55,7 +55,9 @@ export function createStopLossManager(
         return { success: false, reason: 'non-positive stop price' };
       }
 
-      // inspect existing orders
+      // Check whether a bracket / stop already exists for this position so
+      // polling cannot repeatedly replace it. Delta allows only a single
+      // bracket order per open position.
       let existingOrders: any[] = [];
       try {
         existingOrders = (await client.getOpenOrders(productId)) as any[];
@@ -64,6 +66,7 @@ export function createStopLossManager(
         return { success: false, reason: 'order fetch failed' };
       }
 
+      // Adopt an existing stop-loss order matching our calculated stop price.
       const matching = existingOrders.find((o: any) => {
         const sp = Number(o.stop_price);
         return o.product_id === productId && Number.isFinite(sp) && Math.abs(sp - stopPrice) < 1e-9;
@@ -82,12 +85,12 @@ export function createStopLossManager(
           lastSeenAt: now,
         };
         storage.upsert(updated);
-        logger.info('Adopted existing stop', { tradeId: trade.id, orderId });
+        logger.info('Adopted existing bracket stop', { tradeId: trade.id, orderId });
         return { success: true, orderId, reason: 'adopted existing' };
       }
 
       if (dryRun) {
-        logger.info('Dry-run: would place stop', {
+        logger.info('Dry-run: would place bracket stop', {
           tradeId: trade.id,
           productId,
           side,
@@ -108,23 +111,22 @@ export function createStopLossManager(
         return { success: true, reason: 'dry-run' };
       }
 
-      // live placement
-      const orderSide = side === 'BUY' ? 'sell' : 'buy';
+      // Live: attach a stop-loss bracket to the existing position via
+      // POST /v2/orders/bracket. Size is not specified; a bracket order closes
+      // the entire position. No take-profit leg is sent unless configured.
       const payload = {
         product_id: productId,
-        size,
-        side: orderSide,
-        order_type: 'market_order',
-        stop_price: String(stopPrice),
-        stop_order_type: 'stop_loss_order',
-        stop_trigger_method: 'last_traded_price',
-        reduce_only: true,
+        stop_loss_order: {
+          order_type: 'market_order',
+          stop_price: String(stopPrice),
+        },
+        bracket_stop_trigger_method: 'mark_price',
       };
       let placed: any;
       try {
-        placed = await (client as any).placeOrder(payload);
+        placed = await client.placeBracketOrder(payload);
       } catch (e) {
-        logger.error('Stop placement failed', { tradeId: trade.id, error: String(e) });
+        logger.error('Bracket placement failed', { tradeId: trade.id, error: String(e) });
         const updated: TradeRecord = {
           ...trade,
           stopLossPrice: stopPrice,
@@ -137,42 +139,54 @@ export function createStopLossManager(
         storage.upsert(updated);
         return { success: false, reason: String(e) };
       }
-      const orderId = placed && placed.id ? String(placed.id) : undefined;
-      // verify
+
+      // Verify the bracket using Delta's API response or order/position data.
+      // Never mark the stop verified just because the request returned without
+      // throwing. Log the actual API response if confirmation fails.
+      const bracketOrderId = placed && placed.id ? String(placed.id) : undefined;
       let verified = false;
+      let confirmedId = bracketOrderId;
       for (let i = 0; i < 3; i++) {
         await new Promise((r) => setTimeout(r, 50));
         try {
           const orders = (await client.getOpenOrders(productId)) as any[];
           const found = orders.find((o: any) =>
-            orderId ? String(o.id) === orderId : Number(o.stop_price) === stopPrice,
+            confirmedId ? String(o.id) === confirmedId : Number(o.stop_price) === stopPrice,
           );
           if (found) {
             verified = true;
+            confirmedId = String(found.id);
             break;
           }
         } catch {
           /* retry */
         }
       }
+
       if (!verified) {
-        logger.error('Stop verification failed', { tradeId: trade.id, orderId });
+        logger.error('Bracket verification failed', {
+          tradeId: trade.id,
+          orderId: confirmedId,
+          response: placed,
+        });
         const updated: TradeRecord = {
           ...trade,
-          stopLossOrderId: orderId ?? trade.stopLossOrderId,
+          stopLossOrderId: confirmedId ?? trade.stopLossOrderId,
           stopLossPrice: stopPrice,
           stopLossStatus: 'pending',
+          monitoringStatus: 'pending',
           lastEvent: 'stop unverified',
           lastEventAt: now,
           updatedAt: now,
           lastSeenAt: now,
         };
         storage.upsert(updated);
-        return { success: false, orderId, reason: 'verification failed' };
+        return { success: false, orderId: confirmedId, reason: 'verification failed' };
       }
+
       const updated: TradeRecord = {
         ...trade,
-        stopLossOrderId: orderId ?? trade.stopLossOrderId,
+        stopLossOrderId: confirmedId ?? trade.stopLossOrderId,
         stopLossPrice: stopPrice,
         stopLossStatus: 'verified',
         monitoringStatus: 'active',
@@ -182,8 +196,8 @@ export function createStopLossManager(
         lastSeenAt: now,
       };
       storage.upsert(updated);
-      logger.info('Stop verified', { tradeId: trade.id, orderId });
-      return { success: true, orderId, reason: 'verified' };
+      logger.info('Bracket stop verified', { tradeId: trade.id, orderId: confirmedId });
+      return { success: true, orderId: confirmedId, reason: 'verified' };
     },
   };
 }

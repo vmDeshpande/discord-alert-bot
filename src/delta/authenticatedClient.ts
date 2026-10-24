@@ -22,6 +22,7 @@ export interface AuthenticatedDeltaClient {
   getProduct: (symbol: string) => Promise<DeltaProduct | null>;
   getOpenOrders: (productId?: number) => Promise<unknown[]>;
   placeOrder: (payload: unknown) => Promise<unknown>;
+  placeBracketOrder: (payload: unknown) => Promise<unknown>;
 }
 function defaultTransport(url: string, init: Parameters<HttpTransport>[1]): Promise<HttpResponse> {
   return fetch(url, {
@@ -212,6 +213,9 @@ export function createAuthenticatedDeltaClient(
     },
     async placeOrder(payload: unknown): Promise<unknown> {
       return request('POST', '/v2/orders', {}, payload);
+    },
+    async placeBracketOrder(payload: unknown): Promise<unknown> {
+      return request('POST', '/v2/orders/bracket', {}, payload);
     },
   };
 }

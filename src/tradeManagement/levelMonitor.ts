@@ -1,13 +1,130 @@
 import { Logger } from '../logger';
 import { TradeStorage } from '../database/tradeStorage';
 import { LevelStorage } from '../database/levelStorage';
-import { DeltaCandle } from '../types';
+import { DeltaCandle, LevelRecord, TradeRecord, CandleDecision } from '../types';
 import { evaluateCandleDecision, isTouch, nextCandleTime } from './candleDecision';
-import { executeCloseDecision, CloseExecutorDeps } from './closeExecutor';
+import { executeCloseDecision, CloseExecutorDeps, CloseExecutionResult } from './closeExecutor';
 
 export interface LevelMonitor {
   stop: () => void;
   tick: () => Promise<void>;
+}
+
+export interface LevelNotifier {
+  channelId: string;
+  sendMessage: (
+    channelId: string,
+    content?: string,
+    embed?: unknown,
+  ) => Promise<{ id: string } | null>;
+}
+
+function buildLevelHitEmbed(
+  trade: TradeRecord,
+  level: LevelRecord,
+  currentPrice: number | null,
+): unknown {
+  const direction = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+  return {
+    title: 'LEVEL HIT',
+    color: 0xf1c40f,
+    timestamp: new Date().toISOString(),
+    fields: [
+      { name: 'Event', value: 'LEVEL HIT', inline: true },
+      { name: 'Symbol', value: trade.symbol, inline: true },
+      { name: 'Direction', value: direction, inline: true },
+      { name: 'Trade ID', value: trade.id, inline: true },
+      { name: 'Level Price', value: String(level.levelPrice), inline: true },
+      {
+        name: 'Current Price',
+        value: currentPrice !== null ? String(currentPrice) : 'Unavailable',
+        inline: true,
+      },
+      { name: 'Status', value: 'Waiting for next completed 3-minute candle', inline: true },
+    ],
+  };
+}
+
+function buildLevelDecisionEmbed(
+  trade: TradeRecord,
+  level: LevelRecord,
+  decision: CandleDecision,
+  nextCandle: DeltaCandle,
+): unknown {
+  const direction = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+  const actionLabel = decision.action === 'close' ? 'CLOSE' : 'HOLD';
+  return {
+    title: 'LEVEL DECISION',
+    color: decision.action === 'close' ? 0xe74c3c : 0x2ecc71,
+    timestamp: new Date().toISOString(),
+    fields: [
+      { name: 'Event', value: 'LEVEL DECISION', inline: true },
+      { name: 'Symbol', value: trade.symbol, inline: true },
+      { name: 'Direction', value: direction, inline: true },
+      { name: 'Trade ID', value: trade.id, inline: true },
+      { name: 'Level Price', value: String(level.levelPrice), inline: true },
+      { name: 'Candle Time', value: String(new Date(nextCandle.time).toISOString()), inline: true },
+      { name: 'Candle Close', value: String(nextCandle.close), inline: true },
+      { name: 'Decision', value: actionLabel, inline: true },
+      { name: 'Rule', value: decision.reason, inline: false },
+    ],
+  };
+}
+
+function buildCloseOutcomeEmbed(
+  trade: TradeRecord,
+  level: LevelRecord,
+  result: CloseExecutionResult,
+): unknown {
+  const direction = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+  let title = 'CLOSE RESULT';
+  let color = 0x95a5a6;
+  if (result.status === 'executed') {
+    title = 'TRADE CLOSED';
+    color = 0x2ecc71;
+  } else if (result.status === 'failed') {
+    title = 'CLOSE FAILED';
+    color = 0xe74c3c;
+  } else if (result.status === 'dry-run') {
+    title = 'CLOSE SIMULATED';
+    color = 0xf1c40f;
+  } else if (result.status === 'skipped') {
+    title = 'CLOSE SKIPPED';
+    color = 0x95a5a6;
+  }
+  return {
+    title,
+    color,
+    timestamp: new Date().toISOString(),
+    fields: [
+      { name: 'Event', value: title, inline: true },
+      { name: 'Symbol', value: trade.symbol, inline: true },
+      { name: 'Direction', value: direction, inline: true },
+      { name: 'Trade ID', value: trade.id, inline: true },
+      { name: 'Level Price', value: String(level.levelPrice), inline: true },
+      { name: 'Result', value: result.status, inline: true },
+      { name: 'Reason', value: result.reason, inline: false },
+      ...(result.orderId
+        ? [{ name: 'Order ID', value: String(result.orderId), inline: true }]
+        : []),
+    ],
+  };
+}
+
+async function sendNotification(
+  notifier: LevelNotifier | undefined,
+  logger: Logger,
+  embed: unknown,
+  label: string,
+): Promise<void> {
+  if (!notifier) return;
+  try {
+    await notifier.sendMessage(notifier.channelId, undefined, embed);
+  } catch (err) {
+    logger.error(`Discord ${label} notification failed`, {
+      error: String(err),
+    });
+  }
 }
 
 export function createLevelMonitor(
@@ -17,6 +134,7 @@ export function createLevelMonitor(
   closeDeps: CloseExecutorDeps,
   logger: Logger,
   dryRun: boolean,
+  notifier?: LevelNotifier,
 ): LevelMonitor {
   let stopped = false;
   let processing = false;
@@ -57,6 +175,80 @@ export function createLevelMonitor(
         for (const level of levels as any[]) {
           if (stopped) break;
           try {
+            const now = new Date().toISOString();
+
+            // Already fully processed (decision reported). Skip.
+            if (level.lastProcessedCandleTs !== null) continue;
+
+            // Hit already detected and reported; waiting for the next candle.
+            if (level.triggerCandleTs !== null) {
+              const nextTs = level.nextCandleTs ?? nextCandleTime(level.triggerCandleTs);
+              const nextCandle = candles.find((c) => c.time === nextTs);
+              if (!nextCandle) continue; // candle still forming; keep waiting
+
+              const triggerCandle: DeltaCandle = {
+                time: level.triggerCandleTs,
+                open: 0,
+                high: 0,
+                low: 0,
+                close: 0,
+                volume: 0,
+              };
+
+              const decision = evaluateCandleDecision({
+                level,
+                trade,
+                triggerCandle,
+                nextCandle,
+              } as any);
+
+              // Report the decision exactly once.
+              await sendNotification(
+                notifier,
+                logger,
+                buildLevelDecisionEmbed(trade, level, decision, nextCandle),
+                'level decision',
+              );
+
+              // Mark the level processed so the decision is never re-reported.
+              levelStorage.upsert({
+                ...level,
+                status: 'inactive',
+                monitoringState: 'idle',
+                lastProcessedCandleTs: nextCandle.time,
+                updatedAt: now,
+              });
+
+              if (decision.action === 'close') {
+                if (closingTrades.has(trade.id)) continue;
+                closingTrades.add(trade.id);
+                let result: CloseExecutionResult;
+                try {
+                  result = await executeCloseDecision(
+                    closeDeps,
+                    decision as any,
+                    level as any,
+                    trade as any,
+                    dryRun,
+                  );
+                } catch (err) {
+                  logger.error('Close execution failed', {
+                    error: String(err),
+                    tradeId: trade.id,
+                  });
+                  result = { status: 'failed', reason: String(err) };
+                }
+                await sendNotification(
+                  notifier,
+                  logger,
+                  buildCloseOutcomeEmbed(trade, level, result),
+                  'close outcome',
+                );
+              }
+              continue;
+            }
+
+            // No hit detected yet: look for a touch in the completed candles.
             let trigger: DeltaCandle | null = null;
             for (let i = 0; i < candles.length - 1; i++) {
               if (isTouch(candles[i], level.levelPrice)) {
@@ -65,52 +257,27 @@ export function createLevelMonitor(
               }
             }
             if (!trigger) continue;
-            const nextTs = nextCandleTime(trigger.time);
-            const nextCandle =
-              candles.find((c) => c.time === nextTs) || candles[candles.length - 1];
-            if (!nextCandle) continue;
-            if (level.lastProcessedCandleTs === nextCandle.time) continue;
 
-            const decision = evaluateCandleDecision({
-              level,
-              trade,
-              triggerCandle: trigger,
-              nextCandle,
-            } as any);
-            const now = new Date().toISOString();
-            if (decision.action === 'hold') {
-              levelStorage.upsert({
-                ...level,
-                status: 'inactive',
-                monitoringState: 'idle',
-                lastProcessedCandleTs: nextCandle.time,
-                updatedAt: now,
-              });
-              continue;
-            }
-            if (decision.action === 'close') {
-              levelStorage.upsert({
-                ...level,
-                status: 'inactive',
-                monitoringState: 'idle',
-                lastProcessedCandleTs: nextCandle.time,
-                updatedAt: now,
-              });
-              if (closingTrades.has(trade.id)) continue;
-              closingTrades.add(trade.id);
-              try {
-                await executeCloseDecision(
-                  closeDeps,
-                  decision as any,
-                  level as any,
-                  trade as any,
-                  dryRun,
-                );
-              } catch (err) {
-                logger.error('Close execution failed', { error: String(err), tradeId: trade.id });
-              }
-              continue;
-            }
+            // Report the level hit exactly once. Mark triggerCandleTs so the
+            // hit is not re-reported on subsequent polls or after a restart.
+            const triggerTime = trigger.time;
+            const nextTs = nextCandleTime(triggerTime);
+            levelStorage.upsert({
+              ...level,
+              triggerCandleTs: triggerTime,
+              nextCandleTs: nextTs,
+              monitoringState: 'triggered',
+              updatedAt: now,
+            });
+
+            const currentPrice = candles[candles.length - 1].close;
+            await sendNotification(
+              notifier,
+              logger,
+              buildLevelHitEmbed(trade, level, currentPrice),
+              'level hit',
+            );
+            continue;
           } catch (err) {
             logger.error('Level evaluation failed', {
               error: String(err),
@@ -127,6 +294,7 @@ export function createLevelMonitor(
   const timer = setInterval(() => {
     tick().catch(() => {});
   }, 15000);
+  timer.unref();
 
   return {
     stop: () => {
