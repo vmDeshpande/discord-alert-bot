@@ -119,7 +119,12 @@ export function createAuthenticatedDeltaClient(
       throw new Error(`Rate limited by Delta Exchange (reset ${reset ?? 'unknown'})`);
     }
     if (res.status >= 400) {
-      logger.error('Delta REST HTTP error', { method, path, status: res.status });
+      logger.error('Delta REST HTTP error', {
+        method,
+        path,
+        status: res.status,
+        body: res.body,
+      });
       throw new Error(`Delta HTTP ${res.status}`);
     }
     if (!apiResponse || typeof apiResponse !== 'object' || !('success' in apiResponse)) {

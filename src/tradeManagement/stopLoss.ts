@@ -114,7 +114,7 @@ export function createStopLossManager(
         product_id: productId,
         size,
         side: orderSide,
-        order_type: 'stop_market_order',
+        order_type: 'market_order',
         stop_price: String(stopPrice),
         stop_order_type: 'stop_loss_order',
         stop_trigger_method: 'last_traded_price',

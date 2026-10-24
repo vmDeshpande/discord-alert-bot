@@ -48,4 +48,20 @@ describe('authenticated delta client', () => {
     const client = createAuthenticatedDeltaClient({ baseUrl: 'https://api.india.delta.exchange', apiKey: 'k', apiSecret: 's' }, logger, transport);
     await expect(client.getPositions()).rejects.toThrow(/Rate limited/);
   });
+
+  it('throws on HTTP 400 and logs the response body', async () => {
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+    const transport = async () => ({
+      status: 400,
+      headers: {},
+      body: JSON.stringify({ success: false, error: { code: 'invalid_payload', message: 'stop price invalid' } }),
+    });
+    const client = createAuthenticatedDeltaClient({ baseUrl: 'https://api.india.delta.exchange', apiKey: 'k', apiSecret: 's' }, logger, transport);
+    await expect(client.getPositions()).rejects.toThrow('Delta HTTP 400');
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Delta REST HTTP error',
+      expect.objectContaining({ method: 'GET', path: '/v2/positions/margined', status: 400, body: expect.any(String) })
+    );
+    errorSpy.mockRestore();
+  });
 });
