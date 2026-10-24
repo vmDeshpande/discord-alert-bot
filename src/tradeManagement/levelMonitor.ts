@@ -117,12 +117,17 @@ async function sendNotification(
   embed: unknown,
   label: string,
 ): Promise<void> {
-  if (!notifier) return;
+  if (!notifier) {
+    logger.warn(`Notifier not configured, skipping ${label} notification`);
+    return;
+  }
   try {
     await notifier.sendMessage(notifier.channelId, undefined, embed);
+    logger.info(`Discord ${label} notification sent`, { channelId: notifier.channelId });
   } catch (err) {
     logger.error(`Discord ${label} notification failed`, {
       error: String(err),
+      channelId: notifier.channelId,
     });
   }
 }
@@ -145,6 +150,7 @@ export function createLevelMonitor(
     processing = true;
     try {
       const trades = tradeStorage.getAll();
+      logger.debug('Level monitor tick started', { tradeCount: trades.length });
       for (const trade of trades) {
         if (trade.monitoringStatus === 'closed') {
           const levels = levelStorage.getByTrade(trade.id);
@@ -157,20 +163,60 @@ export function createLevelMonitor(
           }
           continue;
         }
-        if (closingTrades.has(trade.id)) continue;
-        if (trade.stopLossStatus !== 'verified') continue;
-        if (trade.monitoringStatus !== 'active') continue;
+        if (closingTrades.has(trade.id)) {
+          logger.debug('Trade is closing, skipping level monitoring', { tradeId: trade.id });
+          continue;
+        }
+        if (trade.stopLossStatus !== 'verified') {
+          logger.debug('Trade stop loss not verified, skipping levels', {
+            tradeId: trade.id,
+            stopLossStatus: trade.stopLossStatus,
+          });
+          continue;
+        }
+        if (trade.monitoringStatus !== 'active') {
+          logger.debug('Trade not active, skipping levels', {
+            tradeId: trade.id,
+            monitoringStatus: trade.monitoringStatus,
+          });
+          continue;
+        }
 
         const levels = levelStorage.getByTrade(trade.id).filter((l: any) => l.status === 'active');
-        if (levels.length === 0) continue;
+        if (levels.length === 0) {
+          logger.debug('No active levels for trade', { tradeId: trade.id });
+          continue;
+        }
+        logger.info('Monitoring active levels for trade', {
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          levelCount: levels.length,
+        });
 
         let candles: DeltaCandle[] = [];
         try {
           candles = await getCandles(trade.symbol, '3m', 10);
-        } catch {
+          logger.debug('Candles fetched', {
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            candleCount: candles.length,
+          });
+        } catch (err) {
+          logger.error('Failed to fetch candles for trade', {
+            error: String(err),
+            tradeId: trade.id,
+            symbol: trade.symbol,
+          });
           continue;
         }
-        if (candles.length < 2) continue;
+        if (candles.length < 2) {
+          logger.warn('Insufficient candle data for trade', {
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            candleCount: candles.length,
+          });
+          continue;
+        }
 
         for (const level of levels as any[]) {
           if (stopped) break;
@@ -184,7 +230,15 @@ export function createLevelMonitor(
             if (level.triggerCandleTs !== null) {
               const nextTs = level.nextCandleTs ?? nextCandleTime(level.triggerCandleTs);
               const nextCandle = candles.find((c) => c.time === nextTs);
-              if (!nextCandle) continue; // candle still forming; keep waiting
+              if (!nextCandle) {
+                logger.debug('Waiting for next completed candle', {
+                  tradeId: trade.id,
+                  levelId: level.id,
+                  levelPrice: level.levelPrice,
+                  expectedCandleTs: nextTs,
+                });
+                continue; // candle still forming; keep waiting
+              }
 
               const triggerCandle: DeltaCandle = {
                 time: level.triggerCandleTs,
@@ -217,6 +271,15 @@ export function createLevelMonitor(
                 monitoringState: 'idle',
                 lastProcessedCandleTs: nextCandle.time,
                 updatedAt: now,
+              });
+              logger.info('Level decision reported', {
+                tradeId: trade.id,
+                levelId: level.id,
+                levelPrice: level.levelPrice,
+                decision: decision.action,
+                reason: decision.reason,
+                candleTs: nextCandle.time,
+                candleClose: nextCandle.close,
               });
 
               if (decision.action === 'close') {
@@ -256,7 +319,15 @@ export function createLevelMonitor(
                 break;
               }
             }
-            if (!trigger) continue;
+            if (!trigger) {
+              logger.debug('No level touch detected', {
+                tradeId: trade.id,
+                levelId: level.id,
+                levelPrice: level.levelPrice,
+                currentPrice: candles[candles.length - 1].close,
+              });
+              continue;
+            }
 
             // Report the level hit exactly once. Mark triggerCandleTs so the
             // hit is not re-reported on subsequent polls or after a restart.
@@ -271,6 +342,14 @@ export function createLevelMonitor(
             });
 
             const currentPrice = candles[candles.length - 1].close;
+            logger.info('Level hit detected', {
+              tradeId: trade.id,
+              levelId: level.id,
+              symbol: trade.symbol,
+              levelPrice: level.levelPrice,
+              triggerCandleTs: triggerTime,
+              currentPrice,
+            });
             await sendNotification(
               notifier,
               logger,

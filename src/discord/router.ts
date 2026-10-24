@@ -4,18 +4,17 @@ import {
   StringSelectMenuInteraction,
   ButtonInteraction,
   ModalSubmitInteraction,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  ActionRowBuilder,
 } from 'discord.js';
 import { Logger } from '../logger';
 import { AlertStorage } from '../database/storage';
 import { TradeStorage } from '../database/tradeStorage';
 import { LevelStorage } from '../database/levelStorage';
 import { TradeInteractionStorage } from '../database/tradeInteractionStorage';
-import {
-  handleCommandExported,
-  handleSelectMenu,
-  handleLevelCommand,
-  createAndActivateLevel,
-} from './client';
+import { handleCommandExported, handleSelectMenu, handleLevelCommand } from './client';
 import { parseTradeCustomId } from './interactions';
 import {
   buildTradeManageEmbed,
@@ -105,7 +104,6 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
             await menu
               .reply({
                 content: 'Stop must be verified before activating levels.',
-                ephemeral: true,
               })
               .catch(() => {});
             return;
@@ -139,13 +137,8 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         await menu.reply({ content: 'Unknown action.' }).catch(() => {});
         return;
       }
-      if (customId.startsWith('level:set:select:')) {
-        const parts = customId.split(':');
-        // level:set:select:{price}:{condition}
-        const priceStr = parts[3];
-        const condition = parts[4];
+      if (customId === 'level:set:trade:select') {
         const selectedTradeId = menu.values[0];
-
         const trade = deps.tradeStorage?.getById(selectedTradeId);
         if (!trade) {
           await menu.reply({ content: 'Trade not found.' }).catch(() => {});
@@ -159,23 +152,43 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           await menu
             .reply({
               content: 'Stop must be verified before adding levels.',
-              ephemeral: true,
             })
             .catch(() => {});
           return;
         }
 
-        const price = parseFloat(priceStr);
-        if (!isFinitePositive(price)) {
-          await menu.reply({ content: 'Invalid price.' }).catch(() => {});
-          return;
-        }
-        if (condition !== 'BUY' && condition !== 'SELL') {
-          await menu.reply({ content: 'Condition must be BUY or SELL.' }).catch(() => {});
-          return;
-        }
+        const direction = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+        const modal = new ModalBuilder()
+          .setCustomId(`level:set:modal:${trade.id}`)
+          .setTitle(`Add Levels — ${trade.symbol} ${direction}`)
+          .addComponents(
+            new ActionRowBuilder<TextInputBuilder>().addComponents(
+              new TextInputBuilder()
+                .setCustomId('level_price_1')
+                .setLabel('Level 1 Price')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('e.g. 45000')
+                .setRequired(true),
+            ),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(
+              new TextInputBuilder()
+                .setCustomId('level_price_2')
+                .setLabel('Level 2 Price (optional)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('e.g. 44000')
+                .setRequired(false),
+            ),
+            new ActionRowBuilder<TextInputBuilder>().addComponents(
+              new TextInputBuilder()
+                .setCustomId('level_price_3')
+                .setLabel('Level 3 Price (optional)')
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder('e.g. 43000')
+                .setRequired(false),
+            ),
+          );
 
-        await createAndActivateLevel(menu, trade, price, condition, deps.levelStorage, logger);
+        await menu.showModal(modal).catch(() => {});
         return;
       }
       return;
@@ -244,7 +257,6 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
             await buttonInteraction
               .reply({
                 content: 'Stop must be verified before activating levels.',
-                ephemeral: true,
               })
               .catch(() => {});
             return;
@@ -320,8 +332,8 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           side: trade.side,
           levelPrice: price,
           condition: conditionStr as any,
-          status: 'inactive',
-          monitoringState: 'idle',
+          status: 'active',
+          monitoringState: 'monitoring',
           triggerCandleTs: null,
           nextCandleTs: null,
           lastProcessedCandleTs: null,
@@ -330,7 +342,86 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           updatedAt: now,
         };
         deps.levelStorage?.upsert(level);
-        await modal.reply({ content: 'Level added (inactive).' }).catch(() => {});
+        await modal
+          .reply({
+            content: `Level added and monitoring active for ${trade.symbol} ${trade.side} at ${price}.`,
+          })
+          .catch(() => {});
+        return;
+      }
+      if (customId.startsWith('level:set:modal:')) {
+        const parts = customId.split(':');
+        // level:set:modal:{tradeId}
+        const selectedTradeId = parts[3];
+        const trade = deps.tradeStorage?.getById(selectedTradeId);
+        if (!trade || trade.monitoringStatus === 'closed') {
+          await modal.reply({ content: 'Trade session not found or closed.' }).catch(() => {});
+          return;
+        }
+        if (trade.stopLossStatus !== 'verified') {
+          await modal
+            .reply({
+              content: 'Stop must be verified before adding levels.',
+            })
+            .catch(() => {});
+          return;
+        }
+
+        const direction = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+        const now = new Date().toISOString();
+        const savedPrices: number[] = [];
+
+        for (let i = 1; i <= 3; i++) {
+          const priceStr = modal.fields.getTextInputValue(`level_price_${i}`);
+          if (!priceStr || priceStr.trim() === '') continue;
+          const price = parseFloat(priceStr);
+          if (!isFinitePositive(price)) continue;
+
+          // Prevent duplicate levels for the same trade at the same price
+          const existing = (deps.levelStorage?.getByTrade(trade.id) || []).some(
+            (l: any) => l.levelPrice === price,
+          );
+          if (existing) continue;
+
+          const level: any = {
+            id: `level_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            side: trade.side,
+            levelPrice: price,
+            condition: trade.side,
+            status: 'active',
+            monitoringState: 'monitoring',
+            triggerCandleTs: null,
+            nextCandleTs: null,
+            lastProcessedCandleTs: null,
+            holdCount: 0,
+            createdAt: now,
+            updatedAt: now,
+          };
+          deps.levelStorage?.upsert(level);
+          savedPrices.push(price);
+          logger.info('Level created via modal', {
+            id: level.id,
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            direction,
+            price,
+          });
+        }
+
+        if (savedPrices.length === 0) {
+          await modal.reply({ content: 'No valid level prices provided.' }).catch(() => {});
+          return;
+        }
+
+        const priceList = savedPrices.join(', ');
+        await modal.deferReply().catch(() => {});
+        await modal
+          .followUp({
+            content: `Levels saved and monitoring active for ${trade.symbol} ${direction} (trade ${trade.id}): ${priceList}`,
+          })
+          .catch(() => {});
         return;
       }
       return;

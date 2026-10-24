@@ -5,6 +5,7 @@ const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest
 function makeInteraction(options: Record<string, string | null> = {}) {
   const interaction: any = {
     reply: jest.fn().mockResolvedValue(undefined),
+    followUp: jest.fn().mockResolvedValue(undefined),
     options: {
       getSubcommand: () => 'set',
       getString: (k: string) => (options[k] ?? null),
@@ -32,7 +33,7 @@ describe('/level set command', () => {
     jest.clearAllMocks();
   });
 
-  it('creates and activates a level when trade_id is provided', async () => {
+  it('creates and activates a level when trade_id + price + condition are provided', async () => {
     const interaction = makeInteraction({
       trade_id: 't1',
       price: '45000',
@@ -59,10 +60,9 @@ describe('/level set command', () => {
     expect(saved.tradeId).toBe('t1');
     expect(saved.levelPrice).toBe(45000);
     expect(saved.condition).toBe('BUY');
-    expect(interaction.reply).toHaveBeenCalledWith(
+    expect(interaction.followUp).toHaveBeenCalledWith(
       expect.objectContaining({
         content: expect.stringContaining('monitoring active'),
-        ephemeral: true,
       }),
     );
   });
@@ -117,7 +117,6 @@ describe('/level set command', () => {
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
         content: 'Stop must be verified before adding levels.',
-        ephemeral: true,
       }),
     );
   });
@@ -174,11 +173,8 @@ describe('/level set command', () => {
     );
   });
 
-  it('shows select menu when trade_id is missing and open trades exist', async () => {
-    const interaction = makeInteraction({
-      price: '45000',
-      condition: 'BUY',
-    });
+  it('shows select menu when no arguments provided and open trades exist', async () => {
+    const interaction = makeInteraction({});
     const { tradeStorage, levelStorage } = makeStorage([
       {
         id: 't1',
@@ -204,15 +200,14 @@ describe('/level set command', () => {
 
     expect(levelStorage.upsert).not.toHaveBeenCalled();
     const call = (interaction.reply as jest.Mock).mock.calls[0][0];
-    expect(call.ephemeral).toBe(true);
+    expect(call.ephemeral).toBeUndefined();
     expect(call.content).toContain('Select the trade');
     expect(call.components).toHaveLength(1);
     const row = call.components[0];
     const rowJson = row.toJSON();
-    expect(rowJson.type).toBe(1); // ACTION_ROW
+    expect(rowJson.type).toBe(1);
     const menu = rowJson.components[0];
-    expect(menu.custom_id).toBe('level:set:select:45000:BUY');
-    // Only open trade t1 should appear, closed t2 excluded
+    expect(menu.custom_id).toBe('level:set:trade:select');
     expect(menu.options).toHaveLength(1);
     expect(menu.options[0].value).toBe('t1');
     expect(menu.options[0].label).toContain('BTCUSD');
@@ -220,10 +215,7 @@ describe('/level set command', () => {
   });
 
   it('reports no open trades when none exist', async () => {
-    const interaction = makeInteraction({
-      price: '45000',
-      condition: 'BUY',
-    });
+    const interaction = makeInteraction({});
     const { tradeStorage, levelStorage } = makeStorage([
       {
         id: 't1',
@@ -241,14 +233,13 @@ describe('/level set command', () => {
     expect(levelStorage.upsert).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: 'No open trades found. Levels can only be added to open positions.',
-        ephemeral: true,
+        content: expect.stringContaining('No open trades found'),
       }),
     );
   });
 
-  it('rejects when price and condition are missing', async () => {
-    const interaction = makeInteraction({});
+  it('rejects when only partial arguments provided', async () => {
+    const interaction = makeInteraction({ price: '45000' });
     const { tradeStorage, levelStorage } = makeStorage([]);
 
     await handleLevelCommand(interaction, tradeStorage, levelStorage, logger);
@@ -256,8 +247,7 @@ describe('/level set command', () => {
     expect(levelStorage.upsert).not.toHaveBeenCalled();
     expect(interaction.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: 'Provide price and condition (BUY/SELL).',
-        ephemeral: true,
+        content: expect.stringContaining('trade_id, price, and condition'),
       }),
     );
   });

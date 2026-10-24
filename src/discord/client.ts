@@ -497,37 +497,48 @@ function isFinitePositive(n: number): boolean {
   return Number.isFinite(n) && n > 0;
 }
 
-export async function createAndActivateLevel(
+export async function createLevels(
   interaction: any,
   trade: any,
-  price: number,
-  condition: string,
+  prices: number[],
   levelStorage: any,
   logger: Logger,
 ): Promise<void> {
   const now = new Date().toISOString();
-  const level: any = {
-    id: `level_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
-    tradeId: trade.id,
-    symbol: trade.symbol,
-    side: trade.side,
-    levelPrice: price,
-    condition,
-    status: 'active',
-    monitoringState: 'monitoring',
-    triggerCandleTs: null,
-    nextCandleTs: null,
-    lastProcessedCandleTs: null,
-    holdCount: 0,
-    createdAt: now,
-    updatedAt: now,
-  };
-  levelStorage.upsert(level);
-  logger.info('Level added and activated', { id: level.id, tradeId: trade.id });
+  const direction = trade.side === 'BUY' ? 'LONG' : 'SHORT';
+  const saved: any[] = [];
+  for (const price of prices) {
+    if (!isFinitePositive(price)) continue;
+    const level: any = {
+      id: `level_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      side: trade.side,
+      levelPrice: price,
+      condition: trade.side,
+      status: 'active',
+      monitoringState: 'monitoring',
+      triggerCandleTs: null,
+      nextCandleTs: null,
+      lastProcessedCandleTs: null,
+      holdCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+    levelStorage.upsert(level);
+    saved.push(level);
+    logger.info('Level created and activated', {
+      id: level.id,
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      direction,
+      price,
+    });
+  }
+  const priceList = saved.map((l) => l.levelPrice).join(', ');
   await interaction
-    .reply({
-      content: `Level added and monitoring active for ${trade.symbol} ${trade.side} at ${price} (${condition}).`,
-      ephemeral: true,
+    .followUp({
+      content: `Levels saved and monitoring active for ${trade.symbol} ${direction} (trade ${trade.id}): ${priceList}`,
     })
     .catch(() => {});
 }
@@ -568,7 +579,6 @@ export async function handleLevelCommand(
       if (trades.length > 1) {
         await interaction.reply({
           content: 'Multiple trades found. Specify trade_id.',
-          ephemeral: true,
         });
         return;
       }
@@ -590,10 +600,45 @@ export async function handleLevelCommand(
       const priceStr = interaction.options.getString('price');
       const condStr = interaction.options.getString('condition');
 
-      if (!priceStr || !condStr) {
+      // No arguments: show a public select menu of open trades.
+      if (!tradeId && !priceStr && !condStr) {
+        const trades = tradeStorage.getAll ? tradeStorage.getAll() : [];
+        const openTrades = trades.filter((t: any) => t.monitoringStatus !== 'closed');
+        if (openTrades.length === 0) {
+          await interaction.reply({
+            content:
+              'No open trades found. Levels can only be added to open positions. ' +
+              'Monitor Delta Exchange positions first so trades are discovered.',
+          });
+          return;
+        }
+
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('level:set:trade:select')
+            .setPlaceholder('Select an open trade')
+            .addOptions(
+              openTrades.map((t: any) => ({
+                label: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} ${t.entryPrice}`,
+                description: `size ${t.size}`,
+                value: t.id,
+              })),
+            ),
+        );
+
         await interaction.reply({
-          content: 'Provide price and condition (BUY/SELL).',
-          ephemeral: true,
+          content: 'Select the trade to add levels to:',
+          components: [row],
+        });
+        logger.info('Level set trade select menu shown', { count: openTrades.length });
+        return;
+      }
+
+      // Legacy direct invocation: trade_id + price + condition.
+      if (!tradeId || !priceStr || !condStr) {
+        await interaction.reply({
+          content:
+            'Provide trade_id, price, and condition (BUY/SELL), or run /level set with no arguments to pick a trade.',
         });
         return;
       }
@@ -609,53 +654,18 @@ export async function handleLevelCommand(
         return;
       }
 
-      if (tradeId) {
-        const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
-        if (!trade || trade.monitoringStatus === 'closed') {
-          await interaction.reply({ content: 'Trade not found or closed.' });
-          return;
-        }
-        if (trade.stopLossStatus !== 'verified') {
-          await interaction.reply({
-            content: 'Stop must be verified before adding levels.',
-            ephemeral: true,
-          });
-          return;
-        }
-        await createAndActivateLevel(interaction, trade, price, condition, levelStorage, logger);
+      const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
+      if (!trade || trade.monitoringStatus === 'closed') {
+        await interaction.reply({ content: 'Trade not found or closed.' });
         return;
       }
-
-      // No trade_id: show a selectable list of open trades.
-      const trades = tradeStorage.getAll ? tradeStorage.getAll() : [];
-      const openTrades = trades.filter((t: any) => t.monitoringStatus !== 'closed');
-      if (openTrades.length === 0) {
+      if (trade.stopLossStatus !== 'verified') {
         await interaction.reply({
-          content: 'No open trades found. Levels can only be added to open positions.',
-          ephemeral: true,
+          content: 'Stop must be verified before adding levels.',
         });
         return;
       }
-
-      const customId = `level:set:select:${priceStr}:${condition}`;
-      const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId(customId)
-          .setPlaceholder('Select an open trade')
-          .addOptions(
-            openTrades.map((t: any) => ({
-              label: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} ${t.entryPrice}`,
-              description: `size ${t.size} · ID ${t.id}`,
-              value: t.id,
-            })),
-          ),
-      );
-
-      await interaction.reply({
-        content: 'Select the trade to add this level to:',
-        components: [row],
-        ephemeral: true,
-      });
+      await createLevels(interaction, trade, [price], levelStorage, logger);
       return;
     }
     if (subcommand === 'activate') {
@@ -673,7 +683,6 @@ export async function handleLevelCommand(
       if (trade.stopLossStatus !== 'verified') {
         await interaction.reply({
           content: 'Stop must be verified before activating levels.',
-          ephemeral: true,
         });
         return;
       }
