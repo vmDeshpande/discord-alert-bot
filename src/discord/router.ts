@@ -51,7 +51,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           );
         } else {
           await (interaction as ChatInputCommandInteraction)
-            .reply({ content: 'Trade management not available.'})
+            .reply({ content: 'Trade management not available.' })
             .catch(() => {});
         }
         return;
@@ -83,16 +83,16 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const levelId = menu.values[0];
         const trade = deps.tradeStorage?.getById(tradeId);
         if (!trade) {
-          await menu.reply({ content: 'Trade not found.'}).catch(() => {});
+          await menu.reply({ content: 'Trade not found.' }).catch(() => {});
           return;
         }
         if (trade.monitoringStatus === 'closed') {
-          await menu.reply({ content: 'Trade is closed.'}).catch(() => {});
+          await menu.reply({ content: 'Trade is closed.' }).catch(() => {});
           return;
         }
         const level = deps.levelStorage?.getById(levelId);
         if (!level || level.tradeId !== tradeId) {
-          await menu.reply({ content: 'Invalid level.'}).catch(() => {});
+          await menu.reply({ content: 'Invalid level.' }).catch(() => {});
           return;
         }
         if (action === 'activate') {
@@ -112,7 +112,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
             monitoringState: 'monitoring' as any,
             updatedAt: now,
           });
-          await menu.reply({ content: 'Level activated.'}).catch(() => {});
+          await menu.reply({ content: 'Level activated.' }).catch(() => {});
           return;
         }
         if (action === 'deactivate') {
@@ -123,15 +123,15 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
             monitoringState: 'idle' as any,
             updatedAt: now,
           });
-          await menu.reply({ content: 'Level deactivated.'}).catch(() => {});
+          await menu.reply({ content: 'Level deactivated.' }).catch(() => {});
           return;
         }
         if (action === 'delete') {
           deps.levelStorage?.deleteById(levelId);
-          await menu.reply({ content: 'Level deleted.'}).catch(() => {});
+          await menu.reply({ content: 'Level deleted.' }).catch(() => {});
           return;
         }
-        await menu.reply({ content: 'Unknown action.'}).catch(() => {});
+        await menu.reply({ content: 'Unknown action.' }).catch(() => {});
         return;
       }
       return;
@@ -147,15 +147,11 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const action = parts[3];
         const trade = deps.tradeStorage?.getById(tradeId);
         if (!trade) {
-          await buttonInteraction
-            .reply({ content: 'Trade session not found.'})
-            .catch(() => {});
+          await buttonInteraction.reply({ content: 'Trade session not found.' }).catch(() => {});
           return;
         }
         if (trade.monitoringStatus === 'closed') {
-          await buttonInteraction
-            .reply({ content: 'Trade session is closed.'})
-            .catch(() => {});
+          await buttonInteraction.reply({ content: 'Trade session is closed.' }).catch(() => {});
           return;
         }
         if (deps.tradeInteractionStorage) {
@@ -179,7 +175,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         if (action === 'add') {
           if (trade.stopLossStatus !== 'verified') {
             await buttonInteraction
-              .reply({ content: 'Stop must be verified before adding levels.'})
+              .reply({ content: 'Stop must be verified before adding levels.' })
               .catch(() => {});
             return;
           }
@@ -191,17 +187,13 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           const levels = deps.levelStorage?.getByTrade(tradeId) || [];
           const embed = buildTradeManageEmbed(trade, levels);
           const rows = buildManageButtons(tradeId);
-          await buttonInteraction
-            .reply({ embeds: [embed], components: rows})
-            .catch(() => {});
+          await buttonInteraction.reply({ embeds: [embed], components: rows }).catch(() => {});
           return;
         }
         if (action === 'activate' || action === 'deactivate' || action === 'delete') {
           const levels = deps.levelStorage?.getByTrade(tradeId) || [];
           if (levels.length === 0) {
-            await buttonInteraction
-              .reply({ content: 'No levels to manage.'})
-              .catch(() => {});
+            await buttonInteraction.reply({ content: 'No levels to manage.' }).catch(() => {});
             return;
           }
           if (action === 'activate' && trade.stopLossStatus !== 'verified') {
@@ -215,7 +207,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           }
           const menu = buildLevelSelectMenu(tradeId, levels, action);
           await buttonInteraction
-            .reply({ content: `Select level to ${action}:`, components: [menu]})
+            .reply({ content: `Select level to ${action}:`, components: [menu] })
             .catch(() => {});
           return;
         }
@@ -223,14 +215,10 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           const levels = deps.levelStorage?.getByTrade(tradeId) || [];
           const embed = buildTradeManageEmbed(trade, levels);
           const rows = buildManageButtons(tradeId);
-          await buttonInteraction
-            .reply({ embeds: [embed], components: rows})
-            .catch(() => {});
+          await buttonInteraction.reply({ embeds: [embed], components: rows }).catch(() => {});
           return;
         }
-        await buttonInteraction
-          .reply({ content: 'Unknown action.'})
-          .catch(() => {});
+        await buttonInteraction.reply({ content: 'Unknown action.' }).catch(() => {});
         return;
       }
       // Also support old format via parseTradeCustomId
@@ -239,16 +227,14 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const trade = deps.tradeStorage?.getById(parsed.tradeId);
         if (!trade || trade.monitoringStatus === 'closed') {
           await buttonInteraction
-            .reply({ content: 'Trade session not found or closed.'})
+            .reply({ content: 'Trade session not found or closed.' })
             .catch(() => {});
           return;
         }
         const levels = deps.levelStorage?.getByTrade(trade.id) || [];
         const embed = buildTradeManageEmbed(trade, levels);
         const rows = buildManageButtons(trade.id);
-        await buttonInteraction
-          .reply({ embeds: [embed], components: rows})
-          .catch(() => {});
+        await buttonInteraction.reply({ embeds: [embed], components: rows }).catch(() => {});
         return;
       }
       return;
@@ -262,14 +248,12 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const tradeId = parts[2];
         const trade = deps.tradeStorage?.getById(tradeId);
         if (!trade || trade.monitoringStatus === 'closed') {
-          await modal
-            .reply({ content: 'Trade session not found or closed.'})
-            .catch(() => {});
+          await modal.reply({ content: 'Trade session not found or closed.' }).catch(() => {});
           return;
         }
         if (trade.stopLossStatus !== 'verified') {
           await modal
-            .reply({ content: 'Stop must be verified before adding levels.'})
+            .reply({ content: 'Stop must be verified before adding levels.' })
             .catch(() => {});
           return;
         }
@@ -277,13 +261,11 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const conditionStr = modal.fields.getTextInputValue('level_condition').toUpperCase();
         const price = parseFloat(priceStr);
         if (!isFinitePositive(price)) {
-          await modal.reply({ content: 'Invalid price.'}).catch(() => {});
+          await modal.reply({ content: 'Invalid price.' }).catch(() => {});
           return;
         }
         if (conditionStr !== 'BUY' && conditionStr !== 'SELL') {
-          await modal
-            .reply({ content: 'Condition must be BUY or SELL.'})
-            .catch(() => {});
+          await modal.reply({ content: 'Condition must be BUY or SELL.' }).catch(() => {});
           return;
         }
         const now = new Date().toISOString();
@@ -304,7 +286,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           updatedAt: now,
         };
         deps.levelStorage?.upsert(level);
-        await modal.reply({ content: 'Level added (inactive).'}).catch(() => {});
+        await modal.reply({ content: 'Level added (inactive).' }).catch(() => {});
         return;
       }
       return;

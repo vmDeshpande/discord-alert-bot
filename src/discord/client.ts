@@ -510,24 +510,24 @@ export async function handleLevelCommand(
       if (tradeId) {
         const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
         if (!trade) {
-          await interaction.reply({ content: 'Trade not found.'});
+          await interaction.reply({ content: 'Trade not found.' });
           return;
         }
         const levels = levelStorage.getByTrade ? levelStorage.getByTrade(tradeId) : [];
         if (!levels || levels.length === 0) {
-          await interaction.reply({ content: `No levels for trade ${tradeId}.`});
+          await interaction.reply({ content: `No levels for trade ${tradeId}.` });
           return;
         }
         let msg = `Levels for ${trade.symbol} ${trade.side} (${tradeId}):\n`;
         for (const l of levels) {
           msg += `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]\n`;
         }
-        await interaction.reply({ content: msg});
+        await interaction.reply({ content: msg });
         return;
       }
       const trades = tradeStorage.getAll ? tradeStorage.getAll() : [];
       if (!trades || trades.length === 0) {
-        await interaction.reply({ content: 'No trade sessions found.'});
+        await interaction.reply({ content: 'No trade sessions found.' });
         return;
       }
       if (trades.length > 1) {
@@ -540,14 +540,14 @@ export async function handleLevelCommand(
       const trade = trades[0];
       const levels = levelStorage.getByTrade ? levelStorage.getByTrade(trade.id) : [];
       if (!levels || levels.length === 0) {
-        await interaction.reply({ content: `No levels for trade ${trade.id}.`});
+        await interaction.reply({ content: `No levels for trade ${trade.id}.` });
         return;
       }
       let msg = `Levels for ${trade.symbol} ${trade.side} (${trade.id}):\n`;
       for (const l of levels) {
         msg += `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]\n`;
       }
-      await interaction.reply({ content: msg});
+      await interaction.reply({ content: msg });
       return;
     }
     if (subcommand === 'set') {
@@ -563,7 +563,7 @@ export async function handleLevelCommand(
       }
       const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
       if (!trade || trade.monitoringStatus === 'closed') {
-        await interaction.reply({ content: 'Trade not found or closed.'});
+        await interaction.reply({ content: 'Trade not found or closed.' });
         return;
       }
       if (trade.stopLossStatus !== 'verified') {
@@ -576,11 +576,11 @@ export async function handleLevelCommand(
       const price = parseFloat(priceStr);
       const condition = condStr.toUpperCase();
       if (!isFinitePositive(price)) {
-        await interaction.reply({ content: 'Invalid price.'});
+        await interaction.reply({ content: 'Invalid price.' });
         return;
       }
       if (condition !== 'BUY' && condition !== 'SELL') {
-        await interaction.reply({ content: 'Condition must be BUY or SELL.'});
+        await interaction.reply({ content: 'Condition must be BUY or SELL.' });
         return;
       }
       const now = new Date().toISOString();
@@ -601,19 +601,19 @@ export async function handleLevelCommand(
         updatedAt: now,
       };
       levelStorage.upsert(level);
-      await interaction.reply({ content: 'Level added (inactive).'});
+      await interaction.reply({ content: 'Level added (inactive).' });
       return;
     }
     if (subcommand === 'activate') {
       const tradeId = interaction.options.getString('trade_id');
       const levelId = interaction.options.getString('level_id');
       if (!tradeId || !levelId) {
-        await interaction.reply({ content: 'Provide trade_id and level_id.'});
+        await interaction.reply({ content: 'Provide trade_id and level_id.' });
         return;
       }
       const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
       if (!trade || trade.monitoringStatus === 'closed') {
-        await interaction.reply({ content: 'Trade not found or closed.'});
+        await interaction.reply({ content: 'Trade not found or closed.' });
         return;
       }
       if (trade.stopLossStatus !== 'verified') {
@@ -625,7 +625,7 @@ export async function handleLevelCommand(
       }
       const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
       if (!level || level.tradeId !== tradeId) {
-        await interaction.reply({ content: 'Invalid level.'});
+        await interaction.reply({ content: 'Invalid level.' });
         return;
       }
       const now = new Date().toISOString();
@@ -635,19 +635,19 @@ export async function handleLevelCommand(
         monitoringState: 'monitoring' as any,
         updatedAt: now,
       });
-      await interaction.reply({ content: 'Level activated.'});
+      await interaction.reply({ content: 'Level activated.' });
       return;
     }
     if (subcommand === 'deactivate') {
       const tradeId = interaction.options.getString('trade_id');
       const levelId = interaction.options.getString('level_id');
       if (!tradeId || !levelId) {
-        await interaction.reply({ content: 'Provide trade_id and level_id.'});
+        await interaction.reply({ content: 'Provide trade_id and level_id.' });
         return;
       }
       const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
       if (!level || level.tradeId !== tradeId) {
-        await interaction.reply({ content: 'Invalid level.'});
+        await interaction.reply({ content: 'Invalid level.' });
         return;
       }
       const now = new Date().toISOString();
@@ -657,28 +657,28 @@ export async function handleLevelCommand(
         monitoringState: 'idle' as any,
         updatedAt: now,
       });
-      await interaction.reply({ content: 'Level deactivated.'});
+      await interaction.reply({ content: 'Level deactivated.' });
       return;
     }
     if (subcommand === 'delete') {
       const tradeId = interaction.options.getString('trade_id');
       const levelId = interaction.options.getString('level_id');
       if (!tradeId || !levelId) {
-        await interaction.reply({ content: 'Provide trade_id and level_id.'});
+        await interaction.reply({ content: 'Provide trade_id and level_id.' });
         return;
       }
       const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
       if (!level || level.tradeId !== tradeId) {
-        await interaction.reply({ content: 'Invalid level.'});
+        await interaction.reply({ content: 'Invalid level.' });
         return;
       }
       levelStorage.deleteById(levelId);
-      await interaction.reply({ content: 'Level deleted.'});
+      await interaction.reply({ content: 'Level deleted.' });
       return;
     }
-    await interaction.reply({ content: 'Unknown subcommand.'});
+    await interaction.reply({ content: 'Unknown subcommand.' });
   } catch (err) {
     logger.error('Level command error', { error: String(err) });
-    await interaction.reply({ content: 'An error occurred.'}).catch(() => {});
+    await interaction.reply({ content: 'An error occurred.' }).catch(() => {});
   }
 }

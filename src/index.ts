@@ -15,6 +15,7 @@ import { routeInteraction } from './discord/router';
 import { createAuthenticatedDeltaClient } from './delta/authenticatedClient';
 import { createTradeServiceManager } from './tradeManagement/serviceManager';
 import { createTradeIntegration } from './tradeManagement/integration';
+import { createLevelMonitor } from './tradeManagement/levelMonitor';
 
 let deltaClient: DeltaClient | null = null;
 let discordClient: DiscordClient | null = null;
@@ -26,6 +27,7 @@ let dashboardInterval: any = null;
 let dashboardInteractionBound = false;
 let tradeServiceManager: ReturnType<typeof createTradeServiceManager> | null = null;
 let tradeIntegration: ReturnType<typeof createTradeIntegration> | null = null;
+let levelMonitor: ReturnType<typeof createLevelMonitor> | null = null;
 
 async function main(): Promise<void> {
   const logger = createLogger('info');
@@ -127,6 +129,35 @@ async function main(): Promise<void> {
           logger,
           stopEnabled,
           closeEnabled,
+        );
+        levelMonitor = createLevelMonitor(
+          tradeStorage,
+          levelStorage,
+          async (symbol: string, resolution: string, limit: number) => {
+            const base = config.tradeManagement.apiBaseUrl;
+            const url = `${base}/v2/history/candles?symbol=${encodeURIComponent(symbol)}&resolution=${encodeURIComponent(resolution)}&limit=${limit}`;
+            const res = await fetch(url);
+            if (!res.ok) return [];
+            const data = (await res.json()) as any;
+            const result = data.result || data.data || [];
+            return result.map((c: any) => ({
+              time: Number(c.time || c.timestamp || c.t),
+              open: Number(c.open || c.o),
+              high: Number(c.high || c.h),
+              low: Number(c.low || c.l),
+              close: Number(c.close || c.c),
+              volume: Number(c.volume || c.v || 0),
+            }));
+          },
+          {
+            client: authClient,
+            tradeStorage,
+            levelStorage,
+            logger,
+            config: config.tradeManagement,
+          } as any,
+          logger,
+          config.tradeManagement.demoMode || !closeEnabled,
         );
       } catch (err) {
         logger.error('Failed to start trade services', { error: String(err) });
@@ -236,6 +267,11 @@ function shutdown(): void {
   if (dashboardService) {
     dashboardService.stop();
     dashboardService = null;
+  }
+
+  if (levelMonitor) {
+    levelMonitor.stop();
+    levelMonitor = null;
   }
 
   if (tradeIntegration) {
