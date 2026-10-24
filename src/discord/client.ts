@@ -8,14 +8,15 @@ import {
   Events,
   ChatInputCommandInteraction,
   Interaction,
-  SelectMenuInteraction,
+  StringSelectMenuInteraction,
   ActionRowBuilder,
-  SelectMenuBuilder,
+  StringSelectMenuBuilder,
 } from 'discord.js';
 import { Logger } from '../logger';
 import { AlertConfig } from '../alerts/types';
 import { AlertStorage } from '../database/storage';
 import { isValidTargetPrice } from '../alerts/validation';
+import { routeInteraction } from './router';
 
 const ETHUSD_SYMBOL = 'ETHUSD';
 const SOLUSD_SYMBOL = 'SOLUSD';
@@ -26,6 +27,7 @@ export interface DiscordClient {
   stop: () => Promise<void>;
   isReady: () => boolean;
   sendAlert: (channelId: string, message: string) => Promise<boolean>;
+  getClient?: () => Client;
 }
 
 export function createDiscordClient(
@@ -52,16 +54,11 @@ export function createDiscordClient(
   });
 
   client.on(Events.InteractionCreate, async (interaction: Interaction): Promise<void> => {
-    if (interaction.isChatInputCommand()) {
-      await handleCommand(
-        interaction as ChatInputCommandInteraction,
-        storage,
-        logger,
-        channelToSymbol,
-      );
-    } else if (interaction.isSelectMenu()) {
-      await handleSelectMenu(interaction as SelectMenuInteraction, storage, logger);
-    }
+    await routeInteraction(interaction, {
+      logger,
+      storage,
+      channelToSymbol,
+    });
   });
 
   client.on('disconnect', (): void => {
@@ -95,6 +92,65 @@ export function createDiscordClient(
         .addSubcommand((s) => s.setName('deactivate').setDescription('Deactivate an alert'))
         .addSubcommand((s) => s.setName('list').setDescription('List all alerts for this channel'))
         .toJSON(),
+      new SlashCommandBuilder()
+        .setName('level')
+        .setDescription('Manage trade levels')
+        .addSubcommand((s) =>
+          s
+            .setName('set')
+            .setDescription('Add a level to a trade')
+            .addStringOption((o) =>
+              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
+            )
+            .addStringOption((o) =>
+              o.setName('price').setDescription('Level price').setRequired(false),
+            )
+            .addStringOption((o) =>
+              o.setName('condition').setDescription('BUY or SELL').setRequired(false),
+            ),
+        )
+        .addSubcommand((s) =>
+          s
+            .setName('list')
+            .setDescription('List levels')
+            .addStringOption((o) =>
+              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
+            ),
+        )
+        .addSubcommand((s) =>
+          s
+            .setName('activate')
+            .setDescription('Activate a level')
+            .addStringOption((o) =>
+              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
+            )
+            .addStringOption((o) =>
+              o.setName('level_id').setDescription('Level ID').setRequired(false),
+            ),
+        )
+        .addSubcommand((s) =>
+          s
+            .setName('deactivate')
+            .setDescription('Deactivate a level')
+            .addStringOption((o) =>
+              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
+            )
+            .addStringOption((o) =>
+              o.setName('level_id').setDescription('Level ID').setRequired(false),
+            ),
+        )
+        .addSubcommand((s) =>
+          s
+            .setName('delete')
+            .setDescription('Delete a level')
+            .addStringOption((o) =>
+              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
+            )
+            .addStringOption((o) =>
+              o.setName('level_id').setDescription('Level ID').setRequired(false),
+            ),
+        )
+        .toJSON(),
     ];
 
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN || '');
@@ -123,7 +179,7 @@ export function createDiscordClient(
       try {
         const channel = await client.channels.fetch(channelId);
         if (channel && 'send' in channel) {
-          await channel.send(message);
+          await (channel as any).send(message);
           logger.info('Discord alert sent', { channelId });
           return true;
         }
@@ -134,10 +190,11 @@ export function createDiscordClient(
         return false;
       }
     },
+    getClient: (): Client => client,
   };
 }
 
-async function handleCommand(
+export async function handleCommandExported(
   interaction: ChatInputCommandInteraction,
   storage: AlertStorage,
   logger: Logger,
@@ -167,9 +224,9 @@ function buildAlertSelectMenu(
   alerts: AlertConfig[],
   customId: string,
   placeholder: string,
-): ActionRowBuilder<SelectMenuBuilder> {
-  const row = new ActionRowBuilder<SelectMenuBuilder>().addComponents(
-    new SelectMenuBuilder()
+): ActionRowBuilder<StringSelectMenuBuilder> {
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    new StringSelectMenuBuilder()
       .setCustomId(customId)
       .setPlaceholder(placeholder)
       .addOptions(
@@ -251,7 +308,7 @@ export async function handleAlertSet(
       baselinePrice = parseFloat(closeVal);
     }
   } catch {
-    // fall through to error response
+    // fall through
   }
 
   if (
@@ -284,7 +341,7 @@ export async function handleAlertSet(
   storage.save(alertConfig);
 
   await interaction.reply({
-    content: `✅ ${symbol} alert set\nTarget: $${targetPrice.toLocaleString()}\nStatus: Active`,
+    content: `? ${symbol} alert set\nTarget: $${targetPrice.toLocaleString()}\nStatus: Active`,
   });
   logger.info('Alert created via command', { id: alertConfig.id, symbol });
 }
@@ -358,15 +415,14 @@ export async function handleAlertList(
 
   if (alerts.length === 0) {
     await interaction.reply({
-      content: `🔔 ${symbol} Alerts\n\nNo alerts configured.`,
+      content: `?? ${symbol} Alerts\n\nNo alerts configured.`,
     });
     return;
   }
 
-  let message = `🔔 ${symbol} Alerts\n\n`;
+  let message = `?? ${symbol} Alerts\n\n`;
   for (const alert of alerts) {
-    const status: string = alert.active ? '🟢 Active' : '🔕 Inactive';
-    // message += `${alert.id}  $${alert.targetPrice.toLocaleString()}  ${status}\n`;
+    const status: string = alert.active ? '?? Active' : '?? Inactive';
     message += `$${alert.targetPrice.toLocaleString()}  ${status}\n`;
   }
 
@@ -377,7 +433,7 @@ export async function handleAlertList(
 }
 
 export async function handleSelectMenu(
-  interaction: SelectMenuInteraction,
+  interaction: StringSelectMenuInteraction,
   storage: AlertStorage,
   logger: Logger,
 ): Promise<void> {
@@ -412,17 +468,17 @@ export async function handleSelectMenu(
   try {
     if (customId === 'alert:delete') {
       storage.deleteById(alertId);
-      await interaction.update({ content: `🗑️ ${existing.symbol} alert deleted.` });
+      await interaction.update({ content: `??? ${existing.symbol} alert deleted.` });
       logger.info('Alert deleted via select menu', { id: alertId, symbol: existing.symbol });
     } else if (customId === 'alert:activate') {
       existing.active = true;
       storage.update(existing);
-      await interaction.update({ content: `✅ ${existing.symbol} alert activated.` });
+      await interaction.update({ content: `? ${existing.symbol} alert activated.` });
       logger.info('Alert activated via select menu', { id: alertId, symbol: existing.symbol });
     } else if (customId === 'alert:deactivate') {
       existing.active = false;
       storage.update(existing);
-      await interaction.update({ content: `⏸️ ${existing.symbol} alert deactivated.` });
+      await interaction.update({ content: `?? ${existing.symbol} alert deactivated.` });
       logger.info('Alert deactivated via select menu', { id: alertId, symbol: existing.symbol });
     }
   } catch (err) {
@@ -435,4 +491,194 @@ export async function handleSelectMenu(
 
 function generateId(): string {
   return `alert_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+}
+
+function isFinitePositive(n: number): boolean {
+  return Number.isFinite(n) && n > 0;
+}
+
+export async function handleLevelCommand(
+  interaction: ChatInputCommandInteraction,
+  tradeStorage: any,
+  levelStorage: any,
+  logger: Logger,
+): Promise<void> {
+  const subcommand = interaction.options.getSubcommand();
+  try {
+    if (subcommand === 'list') {
+      const tradeId = interaction.options.getString('trade_id');
+      if (tradeId) {
+        const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
+        if (!trade) {
+          await interaction.reply({ content: 'Trade not found.', ephemeral: true });
+          return;
+        }
+        const levels = levelStorage.getByTrade ? levelStorage.getByTrade(tradeId) : [];
+        if (!levels || levels.length === 0) {
+          await interaction.reply({ content: `No levels for trade ${tradeId}.`, ephemeral: true });
+          return;
+        }
+        let msg = `Levels for ${trade.symbol} ${trade.side} (${tradeId}):\n`;
+        for (const l of levels) {
+          msg += `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]\n`;
+        }
+        await interaction.reply({ content: msg, ephemeral: true });
+        return;
+      }
+      const trades = tradeStorage.getAll ? tradeStorage.getAll() : [];
+      if (!trades || trades.length === 0) {
+        await interaction.reply({ content: 'No trade sessions found.', ephemeral: true });
+        return;
+      }
+      if (trades.length > 1) {
+        await interaction.reply({
+          content: 'Multiple trades found. Specify trade_id.',
+          ephemeral: true,
+        });
+        return;
+      }
+      const trade = trades[0];
+      const levels = levelStorage.getByTrade ? levelStorage.getByTrade(trade.id) : [];
+      if (!levels || levels.length === 0) {
+        await interaction.reply({ content: `No levels for trade ${trade.id}.`, ephemeral: true });
+        return;
+      }
+      let msg = `Levels for ${trade.symbol} ${trade.side} (${trade.id}):\n`;
+      for (const l of levels) {
+        msg += `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]\n`;
+      }
+      await interaction.reply({ content: msg, ephemeral: true });
+      return;
+    }
+    if (subcommand === 'set') {
+      const tradeId = interaction.options.getString('trade_id');
+      const priceStr = interaction.options.getString('price');
+      const condStr = interaction.options.getString('condition');
+      if (!tradeId || !priceStr || !condStr) {
+        await interaction.reply({
+          content: 'Provide trade_id, price, and condition (BUY/SELL).',
+          ephemeral: true,
+        });
+        return;
+      }
+      const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
+      if (!trade || trade.monitoringStatus === 'closed') {
+        await interaction.reply({ content: 'Trade not found or closed.', ephemeral: true });
+        return;
+      }
+      if (trade.stopLossStatus !== 'verified') {
+        await interaction.reply({
+          content: 'Stop must be verified before adding levels.',
+          ephemeral: true,
+        });
+        return;
+      }
+      const price = parseFloat(priceStr);
+      const condition = condStr.toUpperCase();
+      if (!isFinitePositive(price)) {
+        await interaction.reply({ content: 'Invalid price.', ephemeral: true });
+        return;
+      }
+      if (condition !== 'BUY' && condition !== 'SELL') {
+        await interaction.reply({ content: 'Condition must be BUY or SELL.', ephemeral: true });
+        return;
+      }
+      const now = new Date().toISOString();
+      const level: any = {
+        id: `level_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+        tradeId: trade.id,
+        symbol: trade.symbol,
+        side: trade.side,
+        levelPrice: price,
+        condition,
+        status: 'inactive',
+        monitoringState: 'idle',
+        triggerCandleTs: null,
+        nextCandleTs: null,
+        lastProcessedCandleTs: null,
+        holdCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      levelStorage.upsert(level);
+      await interaction.reply({ content: 'Level added (inactive).', ephemeral: true });
+      return;
+    }
+    if (subcommand === 'activate') {
+      const tradeId = interaction.options.getString('trade_id');
+      const levelId = interaction.options.getString('level_id');
+      if (!tradeId || !levelId) {
+        await interaction.reply({ content: 'Provide trade_id and level_id.', ephemeral: true });
+        return;
+      }
+      const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
+      if (!trade || trade.monitoringStatus === 'closed') {
+        await interaction.reply({ content: 'Trade not found or closed.', ephemeral: true });
+        return;
+      }
+      if (trade.stopLossStatus !== 'verified') {
+        await interaction.reply({
+          content: 'Stop must be verified before activating levels.',
+          ephemeral: true,
+        });
+        return;
+      }
+      const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
+      if (!level || level.tradeId !== tradeId) {
+        await interaction.reply({ content: 'Invalid level.', ephemeral: true });
+        return;
+      }
+      const now = new Date().toISOString();
+      levelStorage.upsert({
+        ...level,
+        status: 'active' as any,
+        monitoringState: 'monitoring' as any,
+        updatedAt: now,
+      });
+      await interaction.reply({ content: 'Level activated.', ephemeral: true });
+      return;
+    }
+    if (subcommand === 'deactivate') {
+      const tradeId = interaction.options.getString('trade_id');
+      const levelId = interaction.options.getString('level_id');
+      if (!tradeId || !levelId) {
+        await interaction.reply({ content: 'Provide trade_id and level_id.', ephemeral: true });
+        return;
+      }
+      const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
+      if (!level || level.tradeId !== tradeId) {
+        await interaction.reply({ content: 'Invalid level.', ephemeral: true });
+        return;
+      }
+      const now = new Date().toISOString();
+      levelStorage.upsert({
+        ...level,
+        status: 'inactive' as any,
+        monitoringState: 'idle' as any,
+        updatedAt: now,
+      });
+      await interaction.reply({ content: 'Level deactivated.', ephemeral: true });
+      return;
+    }
+    if (subcommand === 'delete') {
+      const tradeId = interaction.options.getString('trade_id');
+      const levelId = interaction.options.getString('level_id');
+      if (!tradeId || !levelId) {
+        await interaction.reply({ content: 'Provide trade_id and level_id.', ephemeral: true });
+        return;
+      }
+      const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
+      if (!level || level.tradeId !== tradeId) {
+        await interaction.reply({ content: 'Invalid level.', ephemeral: true });
+        return;
+      }
+      levelStorage.deleteById(levelId);
+      await interaction.reply({ content: 'Level deleted.', ephemeral: true });
+      return;
+    }
+    await interaction.reply({ content: 'Unknown subcommand.', ephemeral: true });
+  } catch (err) {
+    logger.error('Level command error', { error: String(err) });
+    await interaction.reply({ content: 'An error occurred.', ephemeral: true }).catch(() => {});
+  }
 }

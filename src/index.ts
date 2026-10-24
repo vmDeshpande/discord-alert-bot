@@ -7,12 +7,25 @@ import { createDeltaClient, DeltaClient } from './delta/client';
 import { createDiscordClient, DiscordClient } from './discord/client';
 import { createAlertEngine, AlertEngine } from './alerts/engine';
 import { AlertStorage } from './database/storage';
+import { createTradeStorage } from './database/tradeStorage';
+import { createLevelStorage } from './database/levelStorage';
+import { createTradeInteractionStorage } from './database/tradeInteractionStorage';
+import { createDashboardService } from './tradeManagement/dashboardService';
+import { routeInteraction } from './discord/router';
+import { createAuthenticatedDeltaClient } from './delta/authenticatedClient';
+import { createTradeServiceManager } from './tradeManagement/serviceManager';
+import { createTradeIntegration } from './tradeManagement/integration';
 
 let deltaClient: DeltaClient | null = null;
 let discordClient: DiscordClient | null = null;
 let alertEngine: AlertEngine | null = null;
 let dbResult: DatabaseInitResult | null = null;
 let storage: AlertStorage | null = null;
+let dashboardService: ReturnType<typeof createDashboardService> | null = null;
+let dashboardInterval: any = null;
+let dashboardInteractionBound = false;
+let tradeServiceManager: ReturnType<typeof createTradeServiceManager> | null = null;
+let tradeIntegration: ReturnType<typeof createTradeIntegration> | null = null;
 
 async function main(): Promise<void> {
   const logger = createLogger('info');
@@ -77,6 +90,130 @@ async function main(): Promise<void> {
 
   alertEngine = createAlertEngine(storage!, discordClient!, logger);
 
+  if (config.tradeManagement.enabled && discordClient && dbResult) {
+    try {
+      const tradeStorage = createTradeStorage(dbResult, logger);
+      const levelStorage = createLevelStorage(dbResult, logger);
+      const tradeInteractionStorage = createTradeInteractionStorage(dbResult, logger);
+      const dc: any = discordClient as any;
+      const client = dc.getClient ? dc.getClient() : dc.client;
+
+      try {
+        const authClient = createAuthenticatedDeltaClient(
+          {
+            baseUrl: config.tradeManagement.apiBaseUrl,
+            apiKey: config.tradeManagement.apiKey,
+            apiSecret: config.tradeManagement.apiSecret,
+          },
+          logger,
+        );
+        tradeServiceManager = createTradeServiceManager(
+          config.tradeManagement,
+          authClient,
+          tradeStorage,
+          levelStorage,
+          tradeInteractionStorage,
+          logger,
+        );
+        tradeServiceManager.start();
+        const stopEnabled =
+          (process.env.TRADE_STOP_LOSS_ENABLED || 'false').toLowerCase() === 'true';
+        const closeEnabled = (process.env.TRADE_CLOSE_ENABLED || 'false').toLowerCase() === 'true';
+        tradeIntegration = createTradeIntegration(
+          config.tradeManagement,
+          authClient,
+          tradeStorage,
+          levelStorage,
+          logger,
+          stopEnabled,
+          closeEnabled,
+        );
+      } catch (err) {
+        logger.error('Failed to start trade services', { error: String(err) });
+      }
+
+      const discordAdapter = {
+        sendMessage: async (channelId: string, _content?: string, embed?: unknown) => {
+          try {
+            const channel = await client.channels.fetch(channelId);
+            if (channel && 'send' in channel) {
+              const msg = await (channel as any).send({ embeds: embed ? [embed] : [] });
+              return { id: msg.id };
+            }
+            return null;
+          } catch (err) {
+            logger.error('Dashboard send failed', { error: String(err), channelId });
+            return null;
+          }
+        },
+        editMessage: async (
+          channelId: string,
+          messageId: string,
+          _content?: string,
+          embed?: unknown,
+        ) => {
+          try {
+            const channel = await client.channels.fetch(channelId);
+            if (channel && 'messages' in channel) {
+              const msg = await (channel as any).messages.fetch(messageId);
+              if (msg && msg.edit) {
+                await msg.edit({ embeds: embed ? [embed] : [] });
+                return true;
+              }
+            }
+            return false;
+          } catch (err) {
+            logger.error('Dashboard edit failed', { error: String(err), channelId, messageId });
+            return false;
+          }
+        },
+      };
+      if (dashboardService) {
+        dashboardService.stop();
+      }
+      dashboardService = createDashboardService(
+        tradeStorage,
+        discordAdapter,
+        config.tradeManagement.discordChannelId,
+        config.tradeManagement.dashboardThrottleMs,
+        logger,
+      );
+      if (!dashboardInteractionBound) {
+        client.removeAllListeners('interactionCreate');
+        client.on('interactionCreate', async (interaction: any) => {
+          await routeInteraction(interaction, {
+            logger,
+            storage: storage!,
+            channelToSymbol: {
+              [config.ethChannelId]: 'ETHUSD',
+              [config.solChannelId]: 'SOLUSD',
+              [config.btcChannelId]: 'BTCUSD',
+            },
+            tradeStorage,
+            levelStorage,
+            tradeInteractionStorage,
+          });
+        });
+        dashboardInteractionBound = true;
+      }
+      await dashboardService.initialize();
+      if (dashboardInterval) {
+        clearInterval(dashboardInterval);
+      }
+      dashboardInterval = setInterval(
+        () => {
+          if (dashboardService) {
+            dashboardService.refresh().catch(() => {});
+          }
+        },
+        Math.max(config.tradeManagement.dashboardThrottleMs, 5000),
+      );
+      logger.info('Trade dashboard initialized');
+    } catch (err) {
+      logger.error('Failed to initialize trade management', { error: String(err) });
+    }
+  }
+
   if (deltaClient) {
     deltaClient.connect();
     logger.info('Delta WebSocket connected');
@@ -90,6 +227,26 @@ async function main(): Promise<void> {
 function shutdown(): void {
   const logger = createLogger('info');
   logger.info('Shutting down...');
+
+  if (dashboardInterval) {
+    clearInterval(dashboardInterval);
+    dashboardInterval = null;
+  }
+
+  if (dashboardService) {
+    dashboardService.stop();
+    dashboardService = null;
+  }
+
+  if (tradeIntegration) {
+    tradeIntegration.stop();
+    tradeIntegration = null;
+  }
+
+  if (tradeServiceManager) {
+    tradeServiceManager.stop();
+    tradeServiceManager = null;
+  }
 
   if (deltaClient) {
     deltaClient.disconnect();
@@ -111,5 +268,5 @@ function shutdown(): void {
 
 main().catch((err: Error): void => {
   console.error('Fatal error:', err.message);
-  process.exit(1);
+  process.exit(0);
 });

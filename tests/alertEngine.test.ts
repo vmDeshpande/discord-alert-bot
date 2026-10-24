@@ -1,4 +1,4 @@
-import {
+﻿import {
   evaluateAlert,
   createAlertEngine,
   shouldMonitorSymbol,
@@ -457,6 +457,7 @@ describe('Alert Engine - Discord-gated integration', () => {
       stop: jest.fn(),
       isReady: jest.fn().mockReturnValue(true),
       sendAlert: jest.fn().mockResolvedValue(true),
+      getClient: jest.fn(),
     };
     const engine = createAlertEngine(storage, discord, logger);
 
@@ -480,6 +481,7 @@ describe('Alert Engine - Discord-gated integration', () => {
       stop: jest.fn(),
       isReady: jest.fn().mockReturnValue(true),
       sendAlert: jest.fn().mockResolvedValue(false),
+      getClient: jest.fn(),
     };
     const engine = createAlertEngine(storage, discord, logger);
 
@@ -505,6 +507,7 @@ describe('Alert Engine - Discord-gated integration', () => {
       stop: jest.fn(),
       isReady: jest.fn().mockReturnValue(true),
       sendAlert: jest.fn().mockResolvedValue(true),
+      getClient: jest.fn(),
     };
     const engine = createAlertEngine(storage, discord, logger);
 
@@ -528,6 +531,7 @@ describe('Alert Engine - Discord-gated integration', () => {
       stop: jest.fn(),
       isReady: jest.fn().mockReturnValue(true),
       sendAlert: jest.fn().mockResolvedValue(true),
+      getClient: jest.fn(),
     };
     const engine = createAlertEngine(storage, discord, logger);
 
@@ -545,6 +549,7 @@ describe('Alert Engine - multiple alerts independent', () => {
       stop: jest.fn(),
       isReady: jest.fn().mockReturnValue(true),
       sendAlert: jest.fn().mockResolvedValue(true),
+      getClient: jest.fn(),
     };
     const engine = createAlertEngine(storage, discord, logger);
 
@@ -581,6 +586,7 @@ describe('Alert Engine - processAlert flow', () => {
       stop: jest.fn(),
       isReady: jest.fn().mockReturnValue(true),
       sendAlert: jest.fn().mockResolvedValue(true),
+      getClient: jest.fn(),
     };
     const engine = createAlertEngine(storage, discord, logger);
 
@@ -1298,3 +1304,7 @@ describe('Configuration validation', () => {
     expect(message).not.toContain('Duplicate channel configuration');
   });
 });
+
+
+
+
