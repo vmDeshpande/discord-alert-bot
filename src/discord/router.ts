@@ -51,7 +51,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           );
         } else {
           await (interaction as ChatInputCommandInteraction)
-            .reply({ content: 'Trade management not available.', ephemeral: true })
+            .reply({ content: 'Trade management not available.'})
             .catch(() => {});
         }
         return;
@@ -83,16 +83,16 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const levelId = menu.values[0];
         const trade = deps.tradeStorage?.getById(tradeId);
         if (!trade) {
-          await menu.reply({ content: 'Trade not found.', ephemeral: true }).catch(() => {});
+          await menu.reply({ content: 'Trade not found.'}).catch(() => {});
           return;
         }
         if (trade.monitoringStatus === 'closed') {
-          await menu.reply({ content: 'Trade is closed.', ephemeral: true }).catch(() => {});
+          await menu.reply({ content: 'Trade is closed.'}).catch(() => {});
           return;
         }
         const level = deps.levelStorage?.getById(levelId);
         if (!level || level.tradeId !== tradeId) {
-          await menu.reply({ content: 'Invalid level.', ephemeral: true }).catch(() => {});
+          await menu.reply({ content: 'Invalid level.'}).catch(() => {});
           return;
         }
         if (action === 'activate') {
@@ -112,7 +112,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
             monitoringState: 'monitoring' as any,
             updatedAt: now,
           });
-          await menu.reply({ content: 'Level activated.', ephemeral: true }).catch(() => {});
+          await menu.reply({ content: 'Level activated.'}).catch(() => {});
           return;
         }
         if (action === 'deactivate') {
@@ -123,15 +123,15 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
             monitoringState: 'idle' as any,
             updatedAt: now,
           });
-          await menu.reply({ content: 'Level deactivated.', ephemeral: true }).catch(() => {});
+          await menu.reply({ content: 'Level deactivated.'}).catch(() => {});
           return;
         }
         if (action === 'delete') {
           deps.levelStorage?.deleteById(levelId);
-          await menu.reply({ content: 'Level deleted.', ephemeral: true }).catch(() => {});
+          await menu.reply({ content: 'Level deleted.'}).catch(() => {});
           return;
         }
-        await menu.reply({ content: 'Unknown action.', ephemeral: true }).catch(() => {});
+        await menu.reply({ content: 'Unknown action.'}).catch(() => {});
         return;
       }
       return;
@@ -148,13 +148,13 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const trade = deps.tradeStorage?.getById(tradeId);
         if (!trade) {
           await buttonInteraction
-            .reply({ content: 'Trade session not found.', ephemeral: true })
+            .reply({ content: 'Trade session not found.'})
             .catch(() => {});
           return;
         }
         if (trade.monitoringStatus === 'closed') {
           await buttonInteraction
-            .reply({ content: 'Trade session is closed.', ephemeral: true })
+            .reply({ content: 'Trade session is closed.'})
             .catch(() => {});
           return;
         }
@@ -179,7 +179,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         if (action === 'add') {
           if (trade.stopLossStatus !== 'verified') {
             await buttonInteraction
-              .reply({ content: 'Stop must be verified before adding levels.', ephemeral: true })
+              .reply({ content: 'Stop must be verified before adding levels.'})
               .catch(() => {});
             return;
           }
@@ -192,7 +192,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           const embed = buildTradeManageEmbed(trade, levels);
           const rows = buildManageButtons(tradeId);
           await buttonInteraction
-            .reply({ embeds: [embed], components: rows, ephemeral: true })
+            .reply({ embeds: [embed], components: rows})
             .catch(() => {});
           return;
         }
@@ -200,7 +200,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           const levels = deps.levelStorage?.getByTrade(tradeId) || [];
           if (levels.length === 0) {
             await buttonInteraction
-              .reply({ content: 'No levels to manage.', ephemeral: true })
+              .reply({ content: 'No levels to manage.'})
               .catch(() => {});
             return;
           }
@@ -215,7 +215,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           }
           const menu = buildLevelSelectMenu(tradeId, levels, action);
           await buttonInteraction
-            .reply({ content: `Select level to ${action}:`, components: [menu], ephemeral: true })
+            .reply({ content: `Select level to ${action}:`, components: [menu]})
             .catch(() => {});
           return;
         }
@@ -224,12 +224,12 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           const embed = buildTradeManageEmbed(trade, levels);
           const rows = buildManageButtons(tradeId);
           await buttonInteraction
-            .reply({ embeds: [embed], components: rows, ephemeral: true })
+            .reply({ embeds: [embed], components: rows})
             .catch(() => {});
           return;
         }
         await buttonInteraction
-          .reply({ content: 'Unknown action.', ephemeral: true })
+          .reply({ content: 'Unknown action.'})
           .catch(() => {});
         return;
       }
@@ -239,7 +239,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const trade = deps.tradeStorage?.getById(parsed.tradeId);
         if (!trade || trade.monitoringStatus === 'closed') {
           await buttonInteraction
-            .reply({ content: 'Trade session not found or closed.', ephemeral: true })
+            .reply({ content: 'Trade session not found or closed.'})
             .catch(() => {});
           return;
         }
@@ -247,7 +247,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const embed = buildTradeManageEmbed(trade, levels);
         const rows = buildManageButtons(trade.id);
         await buttonInteraction
-          .reply({ embeds: [embed], components: rows, ephemeral: true })
+          .reply({ embeds: [embed], components: rows})
           .catch(() => {});
         return;
       }
@@ -263,13 +263,13 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const trade = deps.tradeStorage?.getById(tradeId);
         if (!trade || trade.monitoringStatus === 'closed') {
           await modal
-            .reply({ content: 'Trade session not found or closed.', ephemeral: true })
+            .reply({ content: 'Trade session not found or closed.'})
             .catch(() => {});
           return;
         }
         if (trade.stopLossStatus !== 'verified') {
           await modal
-            .reply({ content: 'Stop must be verified before adding levels.', ephemeral: true })
+            .reply({ content: 'Stop must be verified before adding levels.'})
             .catch(() => {});
           return;
         }
@@ -277,12 +277,12 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         const conditionStr = modal.fields.getTextInputValue('level_condition').toUpperCase();
         const price = parseFloat(priceStr);
         if (!isFinitePositive(price)) {
-          await modal.reply({ content: 'Invalid price.', ephemeral: true }).catch(() => {});
+          await modal.reply({ content: 'Invalid price.'}).catch(() => {});
           return;
         }
         if (conditionStr !== 'BUY' && conditionStr !== 'SELL') {
           await modal
-            .reply({ content: 'Condition must be BUY or SELL.', ephemeral: true })
+            .reply({ content: 'Condition must be BUY or SELL.'})
             .catch(() => {});
           return;
         }
@@ -304,7 +304,7 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
           updatedAt: now,
         };
         deps.levelStorage?.upsert(level);
-        await modal.reply({ content: 'Level added (inactive).', ephemeral: true }).catch(() => {});
+        await modal.reply({ content: 'Level added (inactive).'}).catch(() => {});
         return;
       }
       return;
