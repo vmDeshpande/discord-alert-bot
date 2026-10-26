@@ -109,47 +109,10 @@ export function createDiscordClient(
               o.setName('condition').setDescription('BUY or SELL').setRequired(false),
             ),
         )
-        .addSubcommand((s) =>
-          s
-            .setName('list')
-            .setDescription('List levels')
-            .addStringOption((o) =>
-              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
-            ),
-        )
-        .addSubcommand((s) =>
-          s
-            .setName('activate')
-            .setDescription('Activate a level')
-            .addStringOption((o) =>
-              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
-            )
-            .addStringOption((o) =>
-              o.setName('level_id').setDescription('Level ID').setRequired(false),
-            ),
-        )
-        .addSubcommand((s) =>
-          s
-            .setName('deactivate')
-            .setDescription('Deactivate a level')
-            .addStringOption((o) =>
-              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
-            )
-            .addStringOption((o) =>
-              o.setName('level_id').setDescription('Level ID').setRequired(false),
-            ),
-        )
-        .addSubcommand((s) =>
-          s
-            .setName('delete')
-            .setDescription('Delete a level')
-            .addStringOption((o) =>
-              o.setName('trade_id').setDescription('Trade session ID').setRequired(false),
-            )
-            .addStringOption((o) =>
-              o.setName('level_id').setDescription('Level ID').setRequired(false),
-            ),
-        )
+        .addSubcommand((s) => s.setName('list').setDescription('List levels'))
+        .addSubcommand((s) => s.setName('activate').setDescription('Activate a level'))
+        .addSubcommand((s) => s.setName('deactivate').setDescription('Deactivate a level'))
+        .addSubcommand((s) => s.setName('delete').setDescription('Delete a level'))
         .toJSON(),
     ];
 
@@ -552,191 +515,79 @@ export async function handleLevelCommand(
   const subcommand = interaction.options.getSubcommand();
   try {
     if (subcommand === 'list') {
-      const tradeId = interaction.options.getString('trade_id');
-      if (tradeId) {
-        const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
-        if (!trade) {
-          await interaction.reply({ content: 'Trade not found.' });
-          return;
-        }
-        const levels = levelStorage.getByTrade ? levelStorage.getByTrade(tradeId) : [];
-        if (!levels || levels.length === 0) {
-          await interaction.reply({ content: `No levels for trade ${tradeId}.` });
-          return;
-        }
-        let msg = `Levels for ${trade.symbol} ${trade.side} (${tradeId}):\n`;
-        for (const l of levels) {
-          msg += `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]\n`;
-        }
+      const trades = (tradeStorage.getAll ? tradeStorage.getAll() : []).filter((t: any) => t.monitoringStatus !== 'closed');
+      const withLevels = trades.filter((t: any) => (levelStorage.getByTrade ? levelStorage.getByTrade(t.id) : []).length > 0);
+      if (!withLevels.length) {
+        await interaction.reply({ content: 'No levels found for open trades.' });
+        return;
+      }
+      if (withLevels.length === 1) {
+        const trade = withLevels[0], levels = levelStorage.getByTrade(trade.id) || [];
+        const msg = `Levels for ${trade.symbol} ${trade.side} (${trade.id}):\\n` + levels.map((l: any) => `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]`).join('\\n');
         await interaction.reply({ content: msg });
         return;
       }
-      const trades = tradeStorage.getAll ? tradeStorage.getAll() : [];
-      if (!trades || trades.length === 0) {
-        await interaction.reply({ content: 'No trade sessions found.' });
-        return;
-      }
-      if (trades.length > 1) {
-        await interaction.reply({
-          content: 'Multiple trades found. Specify trade_id.',
-        });
-        return;
-      }
-      const trade = trades[0];
-      const levels = levelStorage.getByTrade ? levelStorage.getByTrade(trade.id) : [];
-      if (!levels || levels.length === 0) {
-        await interaction.reply({ content: `No levels for trade ${trade.id}.` });
-        return;
-      }
-      let msg = `Levels for ${trade.symbol} ${trade.side} (${trade.id}):\n`;
-      for (const l of levels) {
-        msg += `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]\n`;
-      }
-      await interaction.reply({ content: msg });
+      const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder()
+        .setCustomId('level:list:trade:select').setPlaceholder('Select a trade to list levels')
+        .addOptions(withLevels.slice(0,25).map((t: any) => ({
+          label: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} ${t.entryPrice}`.slice(0,100),
+          description: `Levels: ${levelStorage.getByTrade(t.id).length}`, value: t.id,
+        }))));
+      await interaction.reply({ content: withLevels.length > 25 ? 'Select a trade to list its levels (showing the first 25).' : 'Select a trade to list its levels:', components: [row] });
       return;
     }
     if (subcommand === 'set') {
-      const tradeId = interaction.options.getString('trade_id');
-      const priceStr = interaction.options.getString('price');
-      const condStr = interaction.options.getString('condition');
-
-      // No arguments: show a public select menu of open trades.
+      const tradeId = interaction.options.getString('trade_id'), priceStr = interaction.options.getString('price'), condStr = interaction.options.getString('condition');
       if (!tradeId && !priceStr && !condStr) {
-        const trades = tradeStorage.getAll ? tradeStorage.getAll() : [];
-        const openTrades = trades.filter((t: any) => t.monitoringStatus !== 'closed');
-        if (openTrades.length === 0) {
-          await interaction.reply({
-            content:
-              'No open trades found. Levels can only be added to open positions. ' +
-              'Monitor Delta Exchange positions first so trades are discovered.',
-          });
+        const openTrades = (tradeStorage.getAll ? tradeStorage.getAll() : []).filter((t: any) => t.monitoringStatus !== 'closed');
+        if (!openTrades.length) {
+          await interaction.reply({ content: 'No open trades found. Levels can only be added to open positions. Monitor Delta Exchange positions first so trades are discovered.' });
           return;
         }
-
-        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
-          new StringSelectMenuBuilder()
-            .setCustomId('level:set:trade:select')
-            .setPlaceholder('Select an open trade')
-            .addOptions(
-              openTrades.map((t: any) => ({
-                label: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} ${t.entryPrice}`,
-                description: `size ${t.size}`,
-                value: t.id,
-              })),
-            ),
-        );
-
-        await interaction.reply({
-          content: 'Select the trade to add levels to:',
-          components: [row],
-        });
+        const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder()
+          .setCustomId('level:set:trade:select').setPlaceholder('Select an open trade')
+          .addOptions(openTrades.slice(0,25).map((t: any) => ({
+            label: `${t.symbol} ${t.side === 'BUY' ? 'LONG' : 'SHORT'} ${t.entryPrice}`.slice(0,100),
+            description: `size ${t.size}`, value: t.id,
+          }))));
+        await interaction.reply({ content: openTrades.length > 25 ? 'Select the trade to add levels to (showing the first 25).' : 'Select the trade to add levels to:', components: [row] });
         logger.info('Level set trade select menu shown', { count: openTrades.length });
         return;
       }
-
-      // Legacy direct invocation: trade_id + price + condition.
       if (!tradeId || !priceStr || !condStr) {
-        await interaction.reply({
-          content:
-            'Provide trade_id, price, and condition (BUY/SELL), or run /level set with no arguments to pick a trade.',
-        });
+        await interaction.reply({ content: 'Provide trade_id, price, and condition (BUY/SELL), or run /level set with no arguments to pick a trade.' });
         return;
       }
-
-      const price = parseFloat(priceStr);
-      const condition = condStr.toUpperCase();
-      if (!isFinitePositive(price)) {
-        await interaction.reply({ content: 'Invalid price.' });
-        return;
-      }
-      if (condition !== 'BUY' && condition !== 'SELL') {
-        await interaction.reply({ content: 'Condition must be BUY or SELL.' });
-        return;
-      }
-
+      const price = parseFloat(priceStr), condition = condStr.toUpperCase();
+      if (!isFinitePositive(price)) { await interaction.reply({ content: 'Invalid price.' }); return; }
+      if (condition !== 'BUY' && condition !== 'SELL') { await interaction.reply({ content: 'Condition must be BUY or SELL.' }); return; }
       const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
-      if (!trade || trade.monitoringStatus === 'closed') {
-        await interaction.reply({ content: 'Trade not found or closed.' });
-        return;
-      }
-      if (trade.stopLossStatus !== 'verified') {
-        await interaction.reply({
-          content: 'Stop must be verified before adding levels.',
-        });
-        return;
-      }
+      if (!trade || trade.monitoringStatus === 'closed') { await interaction.reply({ content: 'Trade not found or closed.' }); return; }
+      if (trade.stopLossStatus !== 'verified') { await interaction.reply({ content: 'Stop must be verified before adding levels.' }); return; }
       await createLevels(interaction, trade, [price], levelStorage, logger);
       return;
     }
-    if (subcommand === 'activate') {
-      const tradeId = interaction.options.getString('trade_id');
-      const levelId = interaction.options.getString('level_id');
-      if (!tradeId || !levelId) {
-        await interaction.reply({ content: 'Provide trade_id and level_id.' });
-        return;
-      }
-      const trade = tradeStorage.getById ? tradeStorage.getById(tradeId) : undefined;
-      if (!trade || trade.monitoringStatus === 'closed') {
-        await interaction.reply({ content: 'Trade not found or closed.' });
-        return;
-      }
-      if (trade.stopLossStatus !== 'verified') {
-        await interaction.reply({
-          content: 'Stop must be verified before activating levels.',
-        });
-        return;
-      }
-      const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
-      if (!level || level.tradeId !== tradeId) {
-        await interaction.reply({ content: 'Invalid level.' });
-        return;
-      }
-      const now = new Date().toISOString();
-      levelStorage.upsert({
-        ...level,
-        status: 'active' as any,
-        monitoringState: 'monitoring' as any,
-        updatedAt: now,
+    if (subcommand === 'activate' || subcommand === 'deactivate' || subcommand === 'delete') {
+      const allLevels = levelStorage.getAll ? levelStorage.getAll() : [];
+      const eligible = allLevels.filter((level: any) => {
+        const trade = tradeStorage.getById ? tradeStorage.getById(level.tradeId) : undefined;
+        if (!trade || trade.monitoringStatus === 'closed') return false;
+        if (subcommand === 'activate') return level.status !== 'active';
+        if (subcommand === 'deactivate') return level.status === 'active';
+        return true;
       });
-      await interaction.reply({ content: 'Level activated.' });
-      return;
-    }
-    if (subcommand === 'deactivate') {
-      const tradeId = interaction.options.getString('trade_id');
-      const levelId = interaction.options.getString('level_id');
-      if (!tradeId || !levelId) {
-        await interaction.reply({ content: 'Provide trade_id and level_id.' });
+      if (!eligible.length) {
+        await interaction.reply({ content: subcommand === 'activate' ? 'No inactive levels on open trades to activate.' : subcommand === 'deactivate' ? 'No active levels on open trades to deactivate.' : 'No levels on open trades to delete.' });
         return;
       }
-      const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
-      if (!level || level.tradeId !== tradeId) {
-        await interaction.reply({ content: 'Invalid level.' });
-        return;
-      }
-      const now = new Date().toISOString();
-      levelStorage.upsert({
-        ...level,
-        status: 'inactive' as any,
-        monitoringState: 'idle' as any,
-        updatedAt: now,
-      });
-      await interaction.reply({ content: 'Level deactivated.' });
-      return;
-    }
-    if (subcommand === 'delete') {
-      const tradeId = interaction.options.getString('trade_id');
-      const levelId = interaction.options.getString('level_id');
-      if (!tradeId || !levelId) {
-        await interaction.reply({ content: 'Provide trade_id and level_id.' });
-        return;
-      }
-      const level = levelStorage.getById ? levelStorage.getById(levelId) : undefined;
-      if (!level || level.tradeId !== tradeId) {
-        await interaction.reply({ content: 'Invalid level.' });
-        return;
-      }
-      levelStorage.deleteById(levelId);
-      await interaction.reply({ content: 'Level deleted.' });
+      const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(new StringSelectMenuBuilder()
+        .setCustomId(`level:command:${subcommand}`).setPlaceholder(`Select a level to ${subcommand}`)
+        .addOptions(eligible.slice(0,25).map((level: any) => ({
+          label: `${level.symbol} ${level.side === 'BUY' ? 'LONG' : 'SHORT'} @ ${level.levelPrice}`.slice(0,100),
+          description: `${level.status} · ${level.id}`.slice(0,100), value: level.id,
+        }))));
+      await interaction.reply({ content: eligible.length > 25 ? `Select a level to ${subcommand} (showing the first 25).` : `Select a level to ${subcommand}:`, components: [row] });
+      logger.info('Level action select menu shown', { action: subcommand, count: eligible.length });
       return;
     }
     await interaction.reply({ content: 'Unknown subcommand.' });
