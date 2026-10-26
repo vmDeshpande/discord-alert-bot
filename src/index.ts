@@ -172,12 +172,34 @@ async function main(): Promise<void> {
           levelStorage,
           async (symbol: string, resolution: string, limit: number) => {
             const base = config.tradeManagement.apiBaseUrl;
-            const url = `${base}/v2/history/candles?symbol=${encodeURIComponent(symbol)}&resolution=${encodeURIComponent(resolution)}&limit=${limit}`;
+            const nowSec = Math.floor(Date.now() / 1000);
+            const start = nowSec - 3600;
+            const end = nowSec;
+            const url = `${base}/v2/history/candles?resolution=${encodeURIComponent(resolution)}&symbol=${encodeURIComponent(symbol)}&start=${start}&end=${end}`;
+            logger.info('Candle request', {
+              symbol,
+              resolution,
+              start,
+              end,
+              timeframe: resolution,
+              timeRange: `${start}-${end}`,
+            });
             const res = await fetch(url);
-            if (!res.ok) return [];
+            logger.info('Candle response', { symbol, resolution, httpStatus: res.status });
+            if (!res.ok) {
+              logger.warn('Candle request failed', { symbol, resolution, httpStatus: res.status });
+              return [];
+            }
             const data = (await res.json()) as any;
-            const result = data.result || data.data || [];
-            return result.map((c: any) => ({
+            const raw = Array.isArray(data.result)
+              ? data.result
+              : Array.isArray(data.candles)
+                ? data.candles
+                : Array.isArray(data.data)
+                  ? data.data
+                  : [];
+            logger.info('Candle raw result', { symbol, resolution, rawCount: raw.length });
+            const mapped = raw.map((c: any) => ({
               time: Number(c.time || c.timestamp || c.t),
               open: Number(c.open || c.o),
               high: Number(c.high || c.h),
@@ -185,6 +207,14 @@ async function main(): Promise<void> {
               close: Number(c.close || c.c),
               volume: Number(c.volume || c.v || 0),
             }));
+            const filtered = mapped.filter((c: any) => Number.isFinite(c.time) && c.time >= start && c.time <= end);
+            logger.info('Candle filtered result', {
+              symbol,
+              resolution,
+              rawCount: raw.length,
+              filteredCount: filtered.length,
+            });
+            return filtered.slice(-limit);
           },
           {
             client: authClient,
