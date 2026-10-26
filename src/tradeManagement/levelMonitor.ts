@@ -63,7 +63,7 @@ function buildLevelDecisionEmbed(
       { name: 'Direction', value: direction, inline: true },
       { name: 'Trade ID', value: trade.id, inline: true },
       { name: 'Level Price', value: String(level.levelPrice), inline: true },
-      { name: 'Candle Time', value: String(new Date(nextCandle.time).toISOString()), inline: true },
+       { name: 'Candle Time', value: String(new Date(nextCandle.time * 1000).toISOString()), inline: true },
       { name: 'Candle Close', value: String(nextCandle.close), inline: true },
       { name: 'Decision', value: actionLabel, inline: true },
       { name: 'Rule', value: decision.reason, inline: false },
@@ -311,14 +311,42 @@ export function createLevelMonitor(
               continue;
             }
 
-            // No hit detected yet: look for a touch in the completed candles.
-            let trigger: DeltaCandle | null = null;
-            for (let i = 0; i < candles.length - 1; i++) {
-              if (isTouch(candles[i], level.levelPrice)) {
-                trigger = candles[i];
-                break;
-              }
-            }
+             // No hit detected yet: look for a touch in the completed candles.
+             const activationTs = trade.createdAt
+               ? Math.floor(new Date(trade.createdAt).getTime() / 1000)
+               : 0;
+             let trigger: DeltaCandle | null = null;
+             for (let i = 0; i < candles.length - 1; i++) {
+               const candle = candles[i];
+               if (activationTs && candle.time < activationTs) {
+                 logger.debug('Skipping historical candle before activation', {
+                   tradeId: trade.id,
+                   levelId: level.id,
+                   candleTime: candle.time,
+                   candleTimeUtc: new Date(candle.time * 1000).toISOString(),
+                   activationTs,
+                   activationUtc: new Date(activationTs * 1000).toISOString(),
+                 });
+                 continue;
+               }
+               logger.debug('Evaluating candle touch', {
+                 tradeId: trade.id,
+                 levelId: level.id,
+                 levelPrice: level.levelPrice,
+                 candleTime: candle.time,
+                 candleTimeUtc: new Date(candle.time * 1000).toISOString(),
+                 open: candle.open,
+                 high: candle.high,
+                 low: candle.low,
+                 close: candle.close,
+                 condition: `low(${candle.low}) <= level(${level.levelPrice}) && high(${candle.high}) >= level(${level.levelPrice})`,
+                 touched: candle.low <= level.levelPrice && level.levelPrice <= candle.high,
+               });
+               if (isTouch(candle, level.levelPrice)) {
+                 trigger = candle;
+                 break;
+               }
+             }
             if (!trigger) {
               logger.debug('No level touch detected', {
                 tradeId: trade.id,
