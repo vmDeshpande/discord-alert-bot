@@ -116,18 +116,52 @@ async function sendNotification(
   logger: Logger,
   embed: unknown,
   label: string,
+  meta: { tradeId?: string; levelId?: string } = {},
 ): Promise<void> {
   if (!notifier) {
-    logger.warn(`Notifier not configured, skipping ${label} notification`);
+    logger.warn(`Notifier not configured, skipping ${label} notification`, {
+      tradeId: meta.tradeId,
+      levelId: meta.levelId,
+      reason: 'notifier missing',
+    });
     return;
   }
+  const correlationId = `${meta.tradeId || 'na'}-${meta.levelId || 'na'}-${Date.now()}`;
+  logger.info('Discord notification attempt', {
+    correlationId,
+    eventType: label,
+    tradeId: meta.tradeId,
+    levelId: meta.levelId,
+    channelId: notifier.channelId,
+  });
   try {
-    await notifier.sendMessage(notifier.channelId, undefined, embed);
-    logger.info(`Discord ${label} notification sent`, { channelId: notifier.channelId });
+    const msg = await notifier.sendMessage(notifier.channelId, undefined, embed);
+    if (msg && msg.id) {
+      logger.info('Discord notification success', {
+        correlationId,
+        eventType: label,
+        tradeId: meta.tradeId,
+        levelId: meta.levelId,
+        channelId: notifier.channelId,
+        messageId: msg.id,
+      });
+    } else {
+      logger.warn('Discord notification no message id returned', {
+        correlationId,
+        eventType: label,
+        tradeId: meta.tradeId,
+        levelId: meta.levelId,
+        channelId: notifier.channelId,
+      });
+    }
   } catch (err) {
-    logger.error(`Discord ${label} notification failed`, {
-      error: String(err),
+    logger.error('Discord notification failed', {
+      correlationId,
+      eventType: label,
+      tradeId: meta.tradeId,
+      levelId: meta.levelId,
       channelId: notifier.channelId,
+      error: String(err),
     });
   }
 }
@@ -141,6 +175,7 @@ export function createLevelMonitor(
   dryRun: boolean,
   notifier?: LevelNotifier,
 ): LevelMonitor {
+  const debug = process.env.LEVEL_MONITOR_DEBUG === 'true';
   let stopped = false;
   let processing = false;
   const closingTrades = new Set<string>();
@@ -262,6 +297,7 @@ export function createLevelMonitor(
                 logger,
                 buildLevelDecisionEmbed(trade, level, decision, nextCandle),
                 'level decision',
+                { tradeId: trade.id, levelId: level.id },
               );
 
               // Mark the level processed so the decision is never re-reported.
@@ -306,6 +342,7 @@ export function createLevelMonitor(
                   logger,
                   buildCloseOutcomeEmbed(trade, level, result),
                   'close outcome',
+                  { tradeId: trade.id, levelId: level.id },
                 );
               }
               continue;
@@ -329,7 +366,7 @@ export function createLevelMonitor(
                  });
                  continue;
                }
-               logger.debug('Evaluating candle touch', {
+               (debug ? logger.info : logger.debug)('Evaluating candle touch', {
                  tradeId: trade.id,
                  levelId: level.id,
                  levelPrice: level.levelPrice,
@@ -383,6 +420,7 @@ export function createLevelMonitor(
               logger,
               buildLevelHitEmbed(trade, level, currentPrice),
               'level hit',
+              { tradeId: trade.id, levelId: level.id },
             );
             continue;
           } catch (err) {
