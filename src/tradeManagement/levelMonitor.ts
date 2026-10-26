@@ -476,7 +476,7 @@ export function createLevelMonitor(
 
   const timer = setInterval(() => {
     tick().catch(() => {});
-  }, 15000);
+  }, 5000);
   timer.unref();
 
   return {
