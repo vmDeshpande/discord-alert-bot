@@ -283,6 +283,15 @@ export function createLevelMonitor(
                 });
                 continue; // candle still forming; keep waiting
               }
+              const nowSec2 = Math.floor(Date.now() / 1000);
+              if (nextCandle.time + 180 > nowSec2) {
+                logger.debug('Next candle still forming, waiting', {
+                  tradeId: trade.id,
+                  levelId: level.id,
+                  candleTime: nextCandle.time,
+                });
+                continue;
+              }
 
               const triggerCandle: DeltaCandle = {
                 time: level.triggerCandleTs,
@@ -358,21 +367,22 @@ export function createLevelMonitor(
             }
 
              // No hit detected yet: look for a touch in the completed candles.
-             const activationTs = trade.createdAt
-               ? Math.floor(new Date(trade.createdAt).getTime() / 1000)
-               : 0;
+             const activationTs = level.createdAt
+               ? Math.floor(new Date(level.createdAt).getTime() / 1000)
+               : (trade.createdAt
+                   ? Math.floor(new Date(trade.createdAt).getTime() / 1000)
+                   : 0);
+             const nowSec = Math.floor(Date.now() / 1000);
              let trigger: DeltaCandle | null = null;
              for (let i = 0; i < candles.length; i++) {
                const candle = candles[i];
+               // Exclude candles whose 3-minute interval hasn't completed.
+               if (candle.time + 180 > nowSec) {
+                 logger.debug('Skipping incomplete candle', { tradeId: trade.id, levelId: level.id, candleTime: candle.time });
+                 continue;
+               }
                if (activationTs && candle.time < activationTs) {
-                 logger.debug('Skipping historical candle before activation', {
-                   tradeId: trade.id,
-                   levelId: level.id,
-                   candleTime: candle.time,
-                   candleTimeUtc: new Date(candle.time * 1000).toISOString(),
-                   activationTs,
-                   activationUtc: new Date(activationTs * 1000).toISOString(),
-                 });
+                 logger.debug('Skipping historical candle before activation', { tradeId: trade.id, levelId: level.id, candleTime: candle.time, activationTs });
                  continue;
                }
                (debug ? logger.info : logger.debug)('Evaluating candle touch', {
