@@ -117,14 +117,14 @@ async function sendNotification(
   embed: unknown,
   label: string,
   meta: { tradeId?: string; levelId?: string } = {},
-): Promise<void> {
+): Promise<boolean> {
   if (!notifier) {
     logger.warn(`Notifier not configured, skipping ${label} notification`, {
       tradeId: meta.tradeId,
       levelId: meta.levelId,
       reason: 'notifier missing',
     });
-    return;
+    return false;
   }
   const correlationId = `${meta.tradeId || 'na'}-${meta.levelId || 'na'}-${Date.now()}`;
   logger.info('Discord notification attempt', {
@@ -145,6 +145,7 @@ async function sendNotification(
         channelId: notifier.channelId,
         messageId: msg.id,
       });
+      return true;
     } else {
       logger.warn('Discord notification no message id returned', {
         correlationId,
@@ -153,6 +154,7 @@ async function sendNotification(
         levelId: meta.levelId,
         channelId: notifier.channelId,
       });
+      return false;
     }
   } catch (err) {
     logger.error('Discord notification failed', {
@@ -163,6 +165,7 @@ async function sendNotification(
       channelId: notifier.channelId,
       error: String(err),
     });
+    return false;
   }
 }
 
@@ -434,13 +437,29 @@ export function createLevelMonitor(
               triggerCandleTs: triggerTime,
               currentPrice,
             });
-            await sendNotification(
+            const notificationSent = await sendNotification(
               notifier,
               logger,
               buildLevelHitEmbed(trade, level, currentPrice),
               'level hit',
               { tradeId: trade.id, levelId: level.id },
             );
+            if (!notificationSent) {
+              // Roll back the trigger marker so a failed Discord send is retried
+              // on the next tick instead of being treated as an already-reported hit.
+              levelStorage.upsert({
+                ...level,
+                triggerCandleTs: null,
+                nextCandleTs: null,
+                monitoringState: 'idle',
+                updatedAt: now,
+              });
+              logger.warn('Level hit notification will be retried', {
+                tradeId: trade.id,
+                levelId: level.id,
+                triggerCandleTs: triggerTime,
+              });
+            }
             continue;
           } catch (err) {
             logger.error('Level evaluation failed', {
