@@ -46,8 +46,8 @@ function makeLevel(overrides: Partial<LevelRecord> = {}): LevelRecord {
     nextCandleTs: null,
     lastProcessedCandleTs: null,
     holdCount: 0,
-    createdAt: '2026-01-01T00:00:00Z',
-    updatedAt: '2026-01-01T00:00:00Z',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
     ...overrides,
   };
 }
