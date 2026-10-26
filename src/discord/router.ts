@@ -80,6 +80,37 @@ export async function routeInteraction(interaction: Interaction, deps: RouterDep
         await handleSelectMenu(menu, deps.storage, deps.logger);
         return;
       }
+      if (customId === 'level:list:trade:select') {
+        const tradeId = menu.values[0], trade = deps.tradeStorage?.getById(tradeId);
+        if (!trade) { await menu.update({ content: 'Trade not found.', components: [] }).catch(() => {}); return; }
+        const levels = deps.levelStorage?.getByTrade(tradeId) || [];
+        if (!levels.length) { await menu.update({ content: 'No levels found for that trade.', components: [] }).catch(() => {}); return; }
+        const message = `Levels for ${trade.symbol} ${trade.side} (${tradeId}):\\n` + levels.map((l: any) => `- ${l.id}: ${l.levelPrice} ${l.condition} [${l.status}/${l.monitoringState}]`).join('\\n');
+        await menu.update({ content: message, components: [] }).catch(() => {}); return;
+      }
+      if (customId.startsWith('level:command:')) {
+        const action = customId.split(':')[2], levelId = menu.values[0], level = deps.levelStorage?.getById(levelId);
+        if (!level) { await menu.update({ content: 'Level not found. It may have already been deleted.', components: [] }).catch(() => {}); return; }
+        const trade = deps.tradeStorage?.getById(level.tradeId);
+        if (!trade || trade.monitoringStatus === 'closed') { await menu.update({ content: 'This level belongs to a closed or missing trade.', components: [] }).catch(() => {}); return; }
+        if (action === 'activate') {
+          if (trade.stopLossStatus !== 'verified') { await menu.update({ content: 'Stop must be verified before activating levels.', components: [] }).catch(() => {}); return; }
+          deps.levelStorage?.upsert({ ...level, status: 'active' as any, monitoringState: 'monitoring' as any, updatedAt: new Date().toISOString() });
+          await menu.update({ content: `Level ${level.levelPrice} activated for ${level.symbol} ${level.side}.`, components: [] }).catch(() => {});
+          logger.info('Level activated via command select menu', { levelId, tradeId: trade.id }); return;
+        }
+        if (action === 'deactivate') {
+          deps.levelStorage?.upsert({ ...level, status: 'inactive' as any, monitoringState: 'idle' as any, updatedAt: new Date().toISOString() });
+          await menu.update({ content: `Level ${level.levelPrice} deactivated for ${level.symbol} ${level.side}.`, components: [] }).catch(() => {});
+          logger.info('Level deactivated via command select menu', { levelId, tradeId: trade.id }); return;
+        }
+        if (action === 'delete') {
+          deps.levelStorage?.deleteById(levelId);
+          await menu.update({ content: `Level ${level.levelPrice} deleted for ${level.symbol} ${level.side}.`, components: [] }).catch(() => {});
+          logger.info('Level deleted via command select menu', { levelId, tradeId: trade.id }); return;
+        }
+        await menu.update({ content: 'Unknown level action.', components: [] }).catch(() => {}); return;
+      }
       if (customId.startsWith('trade:levelsel:')) {
         const parts = customId.split(':');
         const tradeId = parts[2];
