@@ -47,5 +47,5 @@ export function isTouch(candle: DeltaCandle, levelPrice: number): boolean {
 }
 
 export function nextCandleTime(triggerTs: number): number {
-  return triggerTs + 3 * 60 * 1000;
+  return triggerTs + 180;
 }
