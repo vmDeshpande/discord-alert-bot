@@ -30,7 +30,7 @@ let tradeIntegration: ReturnType<typeof createTradeIntegration> | null = null;
 let levelMonitor: ReturnType<typeof createLevelMonitor> | null = null;
 
 async function main(): Promise<void> {
-  const logger = createLogger('info');
+  const logger = createLogger(process.env.LEVEL_MONITOR_DEBUG === 'true' ? 'debug' : 'info');
   logger.info('Starting Discord Alert Bot');
 
   const config = loadConfig(logger);
@@ -110,7 +110,12 @@ async function main(): Promise<void> {
             }
             return null;
           } catch (err) {
-            logger.error('Discord send failed', { error: String(err), channelId });
+            logger.error('Discord send failed', {
+              error: err instanceof Error ? err.message : String(err),
+              stack: err instanceof Error ? err.stack : undefined,
+              channelId,
+              correlationId: `${channelId}-${Date.now()}`,
+            });
             return null;
           }
         },
@@ -207,8 +212,9 @@ async function main(): Promise<void> {
               close: Number(c.close || c.c),
               volume: Number(c.volume || c.v || 0),
             }));
-            const filtered = mapped.filter((c: any) => Number.isFinite(c.time) && c.time >= start && c.time <= end);
-            logger.info('Candle filtered result', {
+             const filtered = mapped.filter((c: any) => Number.isFinite(c.time) && c.time >= start && c.time <= end);
+             filtered.sort((a: any, b: any) => a.time - b.time);
+             logger.info('Candle filtered result', {
               symbol,
               resolution,
               rawCount: raw.length,
@@ -291,7 +297,7 @@ async function main(): Promise<void> {
 }
 
 function shutdown(): void {
-  const logger = createLogger('info');
+  const logger = createLogger(process.env.LEVEL_MONITOR_DEBUG === 'true' ? 'debug' : 'info');
   logger.info('Shutting down...');
 
   if (dashboardInterval) {

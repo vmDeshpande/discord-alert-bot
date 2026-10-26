@@ -230,11 +230,20 @@ export function createLevelMonitor(
 
         let candles: DeltaCandle[] = [];
         try {
-          candles = await getCandles(trade.symbol, '3m', 10);
-          logger.debug('Candles fetched', {
+           const rawCandles = await getCandles(trade.symbol, '3m', 10);
+           logger.debug('Candle request', {
             tradeId: trade.id,
             symbol: trade.symbol,
-            candleCount: candles.length,
+            endpoint: 'delta candles',
+            params: { symbol: trade.symbol, resolution: '3m', limit: 10 },
+            rawCount: rawCandles.length,
+            returnedOrder: rawCandles.map((c) => c.time),
+           });
+           candles = [...rawCandles].sort((a, b) => a.time - b.time);
+           logger.debug('Candles normalized', {
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            normalizedOrder: candles.map((c) => c.time),
           });
         } catch (err) {
           logger.error('Failed to fetch candles for trade', {
@@ -353,7 +362,7 @@ export function createLevelMonitor(
                ? Math.floor(new Date(trade.createdAt).getTime() / 1000)
                : 0;
              let trigger: DeltaCandle | null = null;
-             for (let i = 0; i < candles.length - 1; i++) {
+             for (let i = 0; i < candles.length; i++) {
                const candle = candles[i];
                if (activationTs && candle.time < activationTs) {
                  logger.debug('Skipping historical candle before activation', {
